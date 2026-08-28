@@ -41,10 +41,11 @@ except through the typed message protocol (`docs/message-protocol.md`).
 
 ```
 kestrel-tui ──┐                    ┌── kestrel-gui
-              ├──> kestrel-core <──┤
-   kestrel-sync ──> kestrel-core
-   kestrel-storage ──> kestrel-core
-   kestrel-crypto ──> kestrel-core
+               ├──> kestrel-core <──┤
+    kestrel-sync ──> kestrel-core
+    kestrel-storage ──> kestrel-core
+    kestrel-crypto ──> kestrel-core
+    kestrel-engine ──> core+sync+storage+crypto (assembly only, ADR 0011)
 ```
 
 | Crate | Owns | May depend on |
@@ -53,8 +54,9 @@ kestrel-tui ──┐                    ┌── kestrel-gui
 | `kestrel-sync` | IMAP/JMAP/SMTP engines, sync state machine, IDLE loops | `kestrel-core` |
 | `kestrel-storage` | SQLite (ADR 0003), Tantivy index, blob CAS | `kestrel-core` |
 | `kestrel-crypto` | keyring/GPG credential store, OpenPGP (Phase 5), TLS config, SASL/OAuth2 flows | `kestrel-core` |
-| `kestrel-tui` | ratatui frontend, `$EDITOR` composition | `kestrel-core` |
-| `kestrel-gui` | Slint shell (ADR 0001), wry viewport, tray/notifications | `kestrel-core` |
+| `kestrel-engine` | Service assembly: supervisor, router, event bus (ADR 0011); no domain logic | all four core-side crates |
+| `kestrel-tui` | ratatui frontend, `$EDITOR` composition | `kestrel-core` (types) + `kestrel-engine` (spawn, binary only) |
+| `kestrel-gui` | Slint shell (ADR 0001), wry viewport, tray/notifications | `kestrel-core` (types) + `kestrel-engine` (spawn, binary only) |
 
 **Binding rules** (enforced in review, see `docs/engineering-standards.md`):
 

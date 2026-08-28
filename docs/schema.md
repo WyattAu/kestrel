@@ -15,12 +15,11 @@ layout per `docs/architecture.md` §5.
 | `$XDG_DATA_HOME/kestrel/blobs/ab/cd/<sha256>` | content-addressed raw bodies & attachments (§4) | durable |
 | `$XDG_DATA_HOME/kestrel/index/` | Tantivy full-text index | **rebuildable** from cache.db + blobs |
 
-> **Open issue (resolve via ADR before Phase 1 storage lands):** the
-> requirements place SQLite at `XDG_CACHE_HOME`, but the `outbox` (unsent
-> mail) must survive a cache wipe. The split above (cache.db vs data.db) is
-> the recommended resolution: syncable metadata lives in the wipeable cache;
-> anything not re-fetchable from a server lives in `data.db`. Both honor the
-> required pragmas and both are sqlx-migrated.
+> **Resolved by ADR 0009:** requirements place SQLite at `XDG_CACHE_HOME`,
+> but the `outbox` (unsent mail) must survive a cache wipe. The split above
+> (cache.db vs data.db) is the accepted resolution: syncable metadata lives
+> in the wipeable cache; anything not re-fetchable from a server lives in
+> `data.db`. Both honor the required pragmas and both are sqlx-migrated.
 
 ## 2. SQLite Pragmas (both databases)
 
