@@ -1,0 +1,3 @@
+# Nightly-only options; applied via `cargo +nightly fmt` (see AGENTS.md).
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"

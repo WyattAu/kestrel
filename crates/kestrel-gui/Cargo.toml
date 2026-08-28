@@ -1,0 +1,36 @@
+[package]
+name = "kestrel-gui"
+description = "Native desktop frontend: Slint shell + sandboxed wry body viewport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kestrel-core = { workspace = true }
+kestrel-engine = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+slint = { version = "1.17", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2"] }
+wry = "0.56"
+uuid = { workspace = true }
+open = "5"
+notify-rust = "4"
+
+[build-dependencies]
+slint-build = "1.17"
+
+[[bin]]
+name = "kestrel-gui"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Rendered-email HTML security analysis (threat model §7) — added in Phase 4
+# hardening; see the GUI security test module.

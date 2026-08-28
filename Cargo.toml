@@ -1,0 +1,102 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kestrel-core",
+    "crates/kestrel-storage",
+    "crates/kestrel-sync",
+    "crates/kestrel-crypto",
+    "crates/kestrel-engine",
+    "crates/kestrel-tui",
+    "crates/kestrel-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/WyattAu/kestrel"
+rust-version = "1.97.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Banned per engineering-standards §2 — escapes allowed only in tests and at
+# documented invariant sites.
+unwrap_used = "deny"
+expect_used = "deny"
+# Arc<Mutex<..>> crossing an await (standards §2): ask for review.
+await_holding_lock = "warn"
+# Error hygiene (ADR 0007).
+print_stderr = "warn"
+print_stdout = "warn"
+# Perf hygiene on hot paths.
+alloc_instead_of_core = "allow"
+std_instead_of_core = "allow"
+
+[workspace.dependencies]
+# Internal crates
+kestrel-core = { path = "crates/kestrel-core", version = "0.1.0" }
+kestrel-storage = { path = "crates/kestrel-storage", version = "0.1.0" }
+kestrel-sync = { path = "crates/kestrel-sync", version = "0.1.0" }
+kestrel-crypto = { path = "crates/kestrel-crypto", version = "0.1.0" }
+kestrel-engine = { path = "crates/kestrel-engine", version = "0.1.0" }
+
+# Async runtime (requirements §1.1)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "signal", "process", "parking_lot"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Errors & observability (ADR 0007, ADR 0008)
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# IDs, hashing, time
+uuid = { version = "1", features = ["v7", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Storage (ADR 0003)
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "migrate"] }
+
+# MIME parsing (ADR 0002)
+mail-parser = "0.11"
+encoding_rs = "0.8"
+
+# Search (requirements §3.3)
+tantivy = "0.26"
+
+# Config (ADR 0006)
+figment = { version = "0.10", features = ["toml", "env"] }
+notify = "8"
+toml = "0.8"
+
+# TLS (requirements §2.1)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = "1"
+webpki-roots = "0.26"
+
+# Crypto / credentials
+keyring = { version = "3", features = ["sync-secret-service", "windows-native", "apple-native"] }
+zeroize = "1"
+
+# Testing
+proptest = "1"
+criterion = { version = "0.7", features = ["html_reports"] }
+tempfile = "3"
+fake = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1

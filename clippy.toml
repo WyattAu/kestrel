@@ -1,0 +1,9 @@
+# Banned APIs (docs/engineering-standards.md §2).
+# Escapes require a `// INVARIANT:` comment or an explicit, reviewed
+# `#[allow]` at the audited site.
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "use kestrel_core::time::Clock (architecture §8: determinism first)" },
+    { path = "std::time::Instant::now", reason = "use kestrel_core::time::Clock (architecture §8: determinism first)" },
+    { path = "tokio::sync::mpsc::unbounded_channel", reason = "bounded channels only (message-protocol §4: backpressure is a designed state)" },
+    { path = "tokio::sync::mpsc::UnboundedSender::send", reason = "bounded channels only (message-protocol §4)" },
+]

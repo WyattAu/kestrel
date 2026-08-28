@@ -1,0 +1,35 @@
+[package]
+name = "kestrel-sync"
+description = "IMAP/JMAP sync engines, SMTP submission, and the outbox queue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kestrel-core = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+webpki-roots = { workspace = true }
+# IMAP transport per ADR 0005 / ADR 0010: `imap-flow` was renamed upstream to
+# `imap-next` and is consumed from crates.io.
+imap-next = { version = "0.3", features = ["stream", "starttls", "ext_condstore_qresync", "ext_namespace", "ext_utf8"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1", "tokio1-rustls-tls", "builder", "smtp-transport"] }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

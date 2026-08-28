@@ -1,0 +1,41 @@
+[package]
+name = "kestrel-crypto"
+description = "Credential storage, SASL/OAuth2 flows, TLS configuration, OpenPGP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kestrel-core = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+keyring = { workspace = true }
+zeroize = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+webpki-roots = { workspace = true }
+base64 = "0.22"
+rand = "0.8"
+sha2 = { workspace = true }
+hmac = "0.12"
+# OpenPGP (Phase 5, requirements §9). Sequoia 2.x (fixed RUSTSEC-2025-0136
+# panic-on-malicious-PKESK in 1.x). OpenSSL crypto backend (production-ready
+# per Sequoia; system libssl). License exception per ADR 0012.
+sequoia-openpgp = { version = "2.4", default-features = false, features = ["crypto-openssl", "compression-deflate"] }
+# OAuth2 token endpoint + JMAP HTTP transport
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+http = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

@@ -1,0 +1,117 @@
+# cargo-deny configuration (engineering-standards §6).
+# Run: cargo deny check
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # gtk-rs GTK3 bindings unmaintained; required by wry's webkit2gtk backend
+    # on Linux (the mandated HTML viewport, ADR 0001). Tracked upstream:
+    # wry migrates to GTK4 bindings when webkit2gtk-6.0 is broadly packaged.
+    "RUSTSEC-2024-0370", # proc-macro-error (via gtk-rs chain)
+    "RUSTSEC-2024-0412", # gdk
+    "RUSTSEC-2024-0413", # atk
+    "RUSTSEC-2024-0414", # gtk
+    "RUSTSEC-2024-0415", # gtk-sys
+    "RUSTSEC-2024-0416", # atk-sys
+    "RUSTSEC-2024-0417", # gdk-sys
+    "RUSTSEC-2024-0418", # glib
+    "RUSTSEC-2024-0419", # glib-sys
+    "RUSTSEC-2024-0420", # pango
+    "RUSTSEC-2024-0436", # webkit2gtk
+    # Slint's text stack (femtovg renderer); maintained downstream by Slint.
+    "RUSTSEC-2026-0192", # ttf-parser
+    "RUSTSEC-2026-0206", # rustybuzz
+]
+
+[licenses]
+version = 2
+# Apache-2.0-compatible permissive licenses only. Copyleft requires a scoped
+# exception with an ADR reference (see below).
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "0BSD",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "CC0-1.0",
+    "NCSA",
+]
+
+# Slint ships under GPL-3.0-only OR LicenseRef-Slint (Royalty-Free Desktop
+# License). We consume it under the Royalty-Free Desktop License per ADR 0001.
+# Scoped to the Slint origin crates.
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "slint"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "slint-build"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "slint-macros"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "i-slint-common"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "i-slint-core"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "i-slint-core-macros"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "i-slint-compiler"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "i-slint-backend-selector"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "i-slint-backend-winit"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "i-slint-renderer-femtovg"
+
+[[licenses.exceptions]]
+allow = ["GPL-3.0-only", "LicenseRef-Slint-Royalty-free-2.0", "LicenseRef-Slint-Software-3.0"]
+crate = "i-slint-renderer-skia"
+
+# Sequoia is LGPL-2.0-or-later; mandated by requirements §9 (Phase 5) and
+# accommodated per ADR 0012 (open-source distribution satisfies LGPL
+# combined-work terms; relinking possible from source).
+[[licenses.exceptions]]
+allow = ["LGPL-2.0-or-later"]
+crate = "sequoia-openpgp"
+
+[[licenses.exceptions]]
+allow = ["LGPL-2.0-or-later"]
+crate = "buffered-reader"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
