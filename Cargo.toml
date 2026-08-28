@@ -66,9 +66,16 @@ serde_json = "1"
 # Storage (ADR 0003)
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "macros", "migrate"] }
 
-# MIME parsing (ADR 0002)
-mail-parser = "0.11"
+# MIME parsing (ADR 0002); full_encoding = legacy charsets incl. Shift-JIS/
+# GB2312 (requirements §4.1)
+mail-parser = { version = "0.11", features = ["full_encoding"] }
 encoding_rs = "0.8"
+# HTML sanitizer for rendered mail (ADR 0013: defense-in-depth alongside the
+# webview CSP sandbox)
+ammonia = "4"
+# URL parsing / IDNA for the link classifier (threat model §4.5)
+url = "2"
+idna = "1"
 
 # Search (requirements §3.3)
 tantivy = "0.26"

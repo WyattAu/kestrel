@@ -1,0 +1,8 @@
+From: x@y
+Subject: eof-boundary
+Content-Type: multipart/mixed; boundary=b
+
+--b
+Content-Type: text/plain
+
+truncated at eof

@@ -1,0 +1,7 @@
+From: broken at example dot org
+To: "Unclosed <x@y
+Subject: missing
+	semicolon
+Content-Type: text/plain charset=utf-8
+
+body

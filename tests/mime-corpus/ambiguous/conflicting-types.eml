@@ -1,0 +1,14 @@
+From: x@y
+Subject: conflict
+Content-Type: multipart/mixed; boundary=part
+
+--part
+Content-Type: text/html
+
+<b>html</b>
+--part
+Content-Type: text/plain
+
+text
+--nomatch
+orphan

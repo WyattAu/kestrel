@@ -1,0 +1,21 @@
+From: deep@x
+Subject: nest
+Content-Type: multipart/mixed; boundary="b0"
+
+--b0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: multipart/mixed; boundary="b2"
+
+--b2
+Content-Type: multipart/mixed; boundary="b3"
+
+--inner
+Content-Type: text/plain
+
+bottom
+--b3--
+--b2--
+--b1--
+--b0--
