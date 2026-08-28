@@ -27,7 +27,9 @@ webpki-roots = { workspace = true }
 base64 = "0.22"
 rand = "0.8"
 sha2 = { workspace = true }
-hmac = "0.12"
+uuid = { workspace = true }
+hmac = { workspace = true }
+pbkdf2 = { workspace = true }
 # OpenPGP (Phase 5, requirements §9). Sequoia 2.x (fixed RUSTSEC-2025-0136
 # panic-on-malicious-PKESK in 1.x). OpenSSL crypto backend (production-ready
 # per Sequoia; system libssl). License exception per ADR 0012.

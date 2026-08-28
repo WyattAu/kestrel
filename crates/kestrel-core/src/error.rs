@@ -76,7 +76,7 @@ pub enum KestrelError {
     OAuthRefreshFailed { detail: String },
     /// OS keyring unavailable / GPG fallback unusable.
     #[error("auth.keyring_unavailable")]
-    KeyringUnavailable,
+    KeyringUnavailable { detail: String },
 
     // ---- transport (sync) ------------------------------------------------
     /// TLS handshake failure.
@@ -148,6 +148,9 @@ pub enum KestrelError {
     /// Signing failed (retryable: key available, operation failed).
     #[error("crypto.signing_failed")]
     SigningFailed { detail: String },
+    /// `OpenPGP` operation failed (decrypt/verify/import).
+    #[error("crypto.openpgp_failed")]
+    OpenPgpFailed { detail: String },
 
     // ---- outbox -------------------------------------------------------------------
     /// Retry budget exhausted; draft preserved.
@@ -190,7 +193,7 @@ impl KestrelError {
             | Self::UnknownKey { .. }
             | Self::CredentialsRejected
             | Self::OAuthRefreshFailed { .. }
-            | Self::KeyringUnavailable
+            | Self::KeyringUnavailable { .. }
             | Self::DbCorrupt { .. }
             | Self::MigrationFailed { .. }
             | Self::DraftInvalid { .. } => RecoveryClass::UserAction,
@@ -211,8 +214,10 @@ impl KestrelError {
             | Self::NotFound { .. }
             | Self::ParseMalformed { .. }
             | Self::ParseLimit { .. }
-            | Self::OpenPgpUnsupported { .. }
             | Self::RetryExhausted { .. } => RecoveryClass::Permanent,
+            Self::OpenPgpUnsupported { .. } | Self::OpenPgpFailed { .. } => {
+                RecoveryClass::Permanent
+            }
             Self::MalformedCommand { .. } | Self::Bug { .. } => RecoveryClass::Bug,
             Self::UidValidityChanged { .. } => RecoveryClass::Reconciliation,
         }
@@ -231,7 +236,7 @@ impl KestrelError {
             Self::MalformedCommand { .. } => "protocol.malformed_command",
             Self::CredentialsRejected => "auth.credentials_rejected",
             Self::OAuthRefreshFailed { .. } => "auth.oauth_refresh_failed",
-            Self::KeyringUnavailable => "auth.keyring_unavailable",
+            Self::KeyringUnavailable { .. } => "auth.keyring_unavailable",
             Self::TlsHandshake { .. } => "transport.tls_handshake",
             Self::ConnectionLost { .. } => "transport.connection_lost",
             Self::CapabilityMissing { .. } => "transport.capability_missing",
@@ -250,6 +255,7 @@ impl KestrelError {
             Self::ParseMalformed { .. } => "parse.malformed",
             Self::ParseLimit { .. } => "parse.limit",
             Self::OpenPgpUnsupported { .. } => "crypto.openpgp_unsupported",
+            Self::OpenPgpFailed { .. } => "crypto.openpgp_failed",
             Self::SigningFailed { .. } => "crypto.signing_failed",
             Self::RetryExhausted { .. } => "outbox.retry_exhausted",
             Self::DraftInvalid { .. } => "outbox.draft_invalid",
@@ -276,7 +282,7 @@ mod tests {
             KestrelError::MalformedCommand { detail: "d".into() },
             KestrelError::CredentialsRejected,
             KestrelError::OAuthRefreshFailed { detail: "d".into() },
-            KestrelError::KeyringUnavailable,
+            KestrelError::KeyringUnavailable { detail: "d".into() },
             KestrelError::TlsHandshake { detail: "d".into() },
             KestrelError::ConnectionLost { detail: "d".into() },
             KestrelError::CapabilityMissing {
@@ -307,6 +313,7 @@ mod tests {
                 actual: "65".into(),
             },
             KestrelError::OpenPgpUnsupported { detail: "d".into() },
+            KestrelError::OpenPgpFailed { detail: "d".into() },
             KestrelError::SigningFailed { detail: "d".into() },
             KestrelError::RetryExhausted { attempts: 12 },
             KestrelError::DraftInvalid { detail: "d".into() },

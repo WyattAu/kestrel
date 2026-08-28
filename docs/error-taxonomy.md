@@ -21,14 +21,14 @@ UI wording lives in frontends, never in `Display` strings.
 |-------------|-------|--------------------------|
 | `ConfigError` | core | `InvalidToml{path, span}` → UserAction; `UnknownKey` → UserAction (warn) |
 | `ProtocolError` | core (message protocol) | `Busy` → Retryable; `Cancelled` → Permanent; `MalformedCommand` → Bug |
-| `AuthError` | crypto | `CredentialsRejected` → UserAction; `OAuthRefreshFailed` → UserAction; `KeyringUnavailable` → UserAction |
+| `AuthError` | crypto | `CredentialsRejected` → UserAction; `OAuthRefreshFailed` → UserAction; `KeyringUnavailable{detail}` → UserAction |
 | `TransportError` | sync | `TlsHandshake` → Retryable; `ConnectionLost` → Retryable; `CapabilityMissing{cap}` → Permanent |
 | `ImapError` | sync | `UidValidityChanged{folder}` → special (triggers reconciliation, requirements §2.2); `FetchAborted` → Retryable |
 | `SmtpError` | sync | `RelayRefused` → Permanent; `Transient4xx` → Retryable; `MessageRejected` → Permanent |
 | `StorageError` | storage | `DbCorrupt{db}` → UserAction (rebuild prompt); `MigrationFailed` → UserAction; `BlobMissing{hash}` → Permanent (re-fetch) |
 | `IndexError` | storage | `Corrupt` → Retryable (rebuild); `CommitFailed` → Retryable |
 | `ParseError` | core (MimeParser, ADR 0002) | `Malformed{detail}` → Permanent (degraded message view); `Limit{kind}` → Permanent (threat model §4.2) |
-| `CryptoError` | crypto | `OpenPgpUnsupported` → Permanent (Phase 5); `SigningFailed` → Retryable |
+| `CryptoError` | crypto | `OpenPgpUnsupported` → Permanent; `OpenPgpFailed` → Permanent; `SigningFailed` → Retryable |
 | `OutboxError` | sync | `RetryExhausted{n}` → Permanent (draft preserved); `DraftInvalid` → UserAction |
 
 ## 3. Rules
