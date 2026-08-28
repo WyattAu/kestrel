@@ -3944,6 +3944,7 @@ dependencies = [
  "mail-parser",
  "notify",
  "proptest",
+ "pulldown-cmark",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3988,6 +3989,7 @@ dependencies = [
 name = "kestrel-engine"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "kestrel-core",
  "kestrel-crypto",
  "kestrel-storage",
@@ -3997,6 +3999,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

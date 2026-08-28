@@ -74,6 +74,9 @@ encoding_rs = "0.8"
 # HTML sanitizer for rendered mail (ADR 0013: defense-in-depth alongside the
 # webview CSP sandbox)
 ammonia = "4"
+# Markdown → HTML for multipart/alternative composition (requirements §5;
+# engine-side so both frontends share one builder)
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # URL parsing / IDNA for the link classifier (threat model §4.5)
 url = "2"
 idna = "1"

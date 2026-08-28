@@ -15,6 +15,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, missing_docs))]
 
 pub mod clock;
+pub mod compose;
 pub mod config;
 pub mod error;
 pub mod ids;

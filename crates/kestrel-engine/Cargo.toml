@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 kestrel-core = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
 kestrel-storage = { workspace = true }
 kestrel-sync = { workspace = true }
 kestrel-crypto = { workspace = true }
