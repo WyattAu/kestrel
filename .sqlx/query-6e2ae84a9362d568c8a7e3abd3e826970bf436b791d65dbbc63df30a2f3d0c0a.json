@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, account_id, raw_rfc822_blob, envelope, retry_count, last_error, created_at\n             FROM outbox\n             WHERE sent_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)\n             ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "raw_rfc822_blob",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "raw_rfc822_blob"
+          }
+        }
+      },
+      {
+        "name": "envelope",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "envelope"
+          }
+        }
+      },
+      {
+        "name": "retry_count",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "retry_count"
+          }
+        }
+      },
+      {
+        "name": "last_error",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "last_error"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "6e2ae84a9362d568c8a7e3abd3e826970bf436b791d65dbbc63df30a2f3d0c0a"
+}

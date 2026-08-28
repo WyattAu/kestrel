@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO folders (id, account_id, remote_name, attributes, role, delimiter, uid_validity, highest_modseq, last_seen)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)\n             ON CONFLICT(account_id, remote_name) DO UPDATE SET\n               attributes = excluded.attributes,\n               role = excluded.role,\n               delimiter = excluded.delimiter,\n               last_seen = excluded.last_seen",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "a84d6542109f85e4a5904e491ba4be3c43bf52a074ba759256f69bdfde665b32"
+}

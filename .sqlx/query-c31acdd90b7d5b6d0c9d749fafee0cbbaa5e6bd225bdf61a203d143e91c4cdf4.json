@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE messages SET flags = ?2,\n                    is_read = ?3, is_flagged = ?4, is_answered = ?5,\n                    indexed_at = NULL\n                 WHERE id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "c31acdd90b7d5b6d0c9d749fafee0cbbaa5e6bd225bdf61a203d143e91c4cdf4"
+}

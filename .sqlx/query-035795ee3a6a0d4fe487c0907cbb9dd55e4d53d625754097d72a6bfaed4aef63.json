@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE blobs SET last_gc_at = ?1 WHERE refcount = 0 AND last_gc_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "035795ee3a6a0d4fe487c0907cbb9dd55e4d53d625754097d72a6bfaed4aef63"
+}

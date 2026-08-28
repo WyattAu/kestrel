@@ -49,7 +49,19 @@ macro_rules! typed_id {
                 Self(id)
             }
         }
+
+        impl $crate::ids::IdParse for $name {
+            fn parse_id(s: &str) -> Option<Self> {
+                $name::parse(s)
+            }
+        }
     };
+}
+
+/// Generic text-parsing seam used by storage row hydration.
+pub trait IdParse: Sized {
+    /// Parses the textual (UUID) form.
+    fn parse_id(s: &str) -> Option<Self>;
 }
 
 typed_id!(

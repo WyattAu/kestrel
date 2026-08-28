@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM parts WHERE message_id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "5cf73bfb132ffe829577a347cc02d9a3ff6d95c6f2e18ac36352cba78dc314f2"
+}

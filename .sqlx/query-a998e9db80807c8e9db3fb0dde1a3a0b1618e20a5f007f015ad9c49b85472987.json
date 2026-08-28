@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE messages SET folder_id = ?2, uid = ?3, indexed_at = NULL WHERE id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "a998e9db80807c8e9db3fb0dde1a3a0b1618e20a5f007f015ad9c49b85472987"
+}

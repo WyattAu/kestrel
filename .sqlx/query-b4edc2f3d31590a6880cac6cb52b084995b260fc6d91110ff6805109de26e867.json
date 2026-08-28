@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, seq, mime_type, content_id, disposition, filename, byte_size, blob_sha256\n             FROM parts WHERE message_id = ?1 ORDER BY seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "parts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "seq",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "parts",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "name": "mime_type",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "parts",
+            "name": "mime_type"
+          }
+        }
+      },
+      {
+        "name": "content_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "parts",
+            "name": "content_id"
+          }
+        }
+      },
+      {
+        "name": "disposition",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "parts",
+            "name": "disposition"
+          }
+        }
+      },
+      {
+        "name": "filename",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "parts",
+            "name": "filename"
+          }
+        }
+      },
+      {
+        "name": "byte_size",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "parts",
+            "name": "byte_size"
+          }
+        }
+      },
+      {
+        "name": "blob_sha256",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "parts",
+            "name": "blob_sha256"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "b4edc2f3d31590a6880cac6cb52b084995b260fc6d91110ff6805109de26e867"
+}

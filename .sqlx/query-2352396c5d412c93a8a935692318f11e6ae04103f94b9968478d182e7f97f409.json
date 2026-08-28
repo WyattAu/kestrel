@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO parts\n                       (id, message_id, seq, mime_type, content_id, disposition, filename, encoding, byte_size, blob_sha256)\n                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "2352396c5d412c93a8a935692318f11e6ae04103f94b9968478d182e7f97f409"
+}

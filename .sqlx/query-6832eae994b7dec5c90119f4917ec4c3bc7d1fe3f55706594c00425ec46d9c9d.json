@@ -1,0 +1,76 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.id, f.remote_name, f.delimiter, f.role,\n                    (SELECT COUNT(*) FROM messages m WHERE m.folder_id = f.id) AS total,\n                    (SELECT COUNT(*) FROM messages m WHERE m.folder_id = f.id AND m.is_read = 0) AS unread\n             FROM folders f WHERE f.account_id = ?1 ORDER BY f.remote_name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "remote_name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "remote_name"
+          }
+        }
+      },
+      {
+        "name": "delimiter",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "delimiter"
+          }
+        }
+      },
+      {
+        "name": "role",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "name": "total",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "unread",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "6832eae994b7dec5c90119f4917ec4c3bc7d1fe3f55706594c00425ec46d9c9d"
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS n FROM messages WHERE folder_id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "n",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "261aeaa407301feb7e7b753e66eeb78a6b121506ebfa0f374b8ae50e2c9bc4f0"
+}

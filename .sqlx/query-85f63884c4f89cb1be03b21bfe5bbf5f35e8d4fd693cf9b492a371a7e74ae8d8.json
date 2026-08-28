@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO outbox (id, account_id, raw_rfc822_blob, raw_inline, envelope, retry_count, next_attempt_at, created_at)\n             VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, ?6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "85f63884c4f89cb1be03b21bfe5bbf5f35e8d4fd693cf9b492a371a7e74ae8d8"
+}

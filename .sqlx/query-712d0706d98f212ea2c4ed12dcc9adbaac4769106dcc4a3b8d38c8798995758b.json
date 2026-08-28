@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blobs (sha256, byte_size, refcount, created_at)\n             VALUES (?1, 0, MAX(?2, 0), ?3)\n             ON CONFLICT(sha256) DO UPDATE SET refcount = MAX(refcount + ?2, 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "712d0706d98f212ea2c4ed12dcc9adbaac4769106dcc4a3b8d38c8798995758b"
+}

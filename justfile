@@ -24,8 +24,11 @@ fmt:
 fmt-check:
     cargo +nightly fmt --all --check
 
-# sqlx offline metadata freshness
+# sqlx offline metadata freshness (builds the combined prepare DB first)
 sqlx-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export DATABASE_URL=$(./scripts/sqlx-prepare-db.sh | grep DATABASE_URL | cut -d= -f2)
     cargo sqlx prepare --check --workspace
 
 # Doc build (broken intra-doc links fail)

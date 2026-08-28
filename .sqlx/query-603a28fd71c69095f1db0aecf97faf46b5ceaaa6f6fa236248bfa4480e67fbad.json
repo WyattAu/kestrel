@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT account_id, remote_name, attributes, role, delimiter, uid_validity, highest_modseq\n             FROM folders WHERE id = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "account_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "remote_name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "remote_name"
+          }
+        }
+      },
+      {
+        "name": "attributes",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "attributes"
+          }
+        }
+      },
+      {
+        "name": "role",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "name": "delimiter",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "delimiter"
+          }
+        }
+      },
+      {
+        "name": "uid_validity",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "uid_validity"
+          }
+        }
+      },
+      {
+        "name": "highest_modseq",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "folders",
+            "name": "highest_modseq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "603a28fd71c69095f1db0aecf97faf46b5ceaaa6f6fa236248bfa4480e67fbad"
+}
