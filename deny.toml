@@ -22,6 +22,8 @@ ignore = [
     # Slint's text stack (femtovg renderer); maintained downstream by Slint.
     "RUSTSEC-2026-0192", # ttf-parser
     "RUSTSEC-2026-0206", # rustybuzz
+    # fxhash (via tantivy) unmaintained — hash-only usage, no security impact.
+    "RUSTSEC-2025-0057",
 ]
 
 [licenses]

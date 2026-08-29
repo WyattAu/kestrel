@@ -33,5 +33,9 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# Rendered-email HTML security analysis (threat model §7) — added in Phase 4
-# hardening; see the GUI security test module.
+# Structural HTML analysis for the security tests (threat model §7).
+# Note: crawlkit-engine cannot coexist in this workspace (conflicting
+# libsqlite3-sys versions: crawlkit pins 0.30, sqlx 0.9 needs 0.37);
+# the same structural assertions are implemented below using an
+# independent HTML tokenizer.
+scraper = "0.21"
