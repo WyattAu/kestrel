@@ -38,4 +38,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 # Integration tests exercise the full stack (engine-composition context).
 kestrel-storage = { workspace = true }
 kestrel-crypto = { workspace = true }
+kestrel-engine = { workspace = true }
 tracing-subscriber = { workspace = true }

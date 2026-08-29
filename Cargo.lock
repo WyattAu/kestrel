@@ -4131,6 +4131,7 @@ dependencies = [
  "imap-next",
  "kestrel-core",
  "kestrel-crypto",
+ "kestrel-engine",
  "kestrel-storage",
  "lettre",
  "reqwest",
