@@ -6,6 +6,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, missing_docs))]
 
 pub mod error;
+pub mod jmap;
 pub mod outbox_service;
 pub mod session;
 pub mod smtp;

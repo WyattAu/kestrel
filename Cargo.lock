@@ -4061,6 +4061,7 @@ dependencies = [
  "kestrel-crypto",
  "kestrel-storage",
  "lettre",
+ "reqwest",
  "rustls",
  "rustls-pki-types",
  "serde",

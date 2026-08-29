@@ -1,0 +1,44 @@
+[package]
+name = "kestrel-fuzz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Path dependency on the crate under test.
+kestrel-core = { path = "../crates/kestrel-core" }
+
+[[bin]]
+name = "fuzz_mime_adapter"
+path = "fuzz_targets/fuzz_mime_adapter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_link_classifier"
+path = "fuzz_targets/fuzz_link_classifier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_html_sanitizer"
+path = "fuzz_targets/fuzz_html_sanitizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_terminal_sanitizer"
+path = "fuzz_targets/fuzz_terminal_sanitizer.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

@@ -4,7 +4,12 @@
 //! Index build is done once per size (setup, not measured); the measured
 //! iteration is the query path (parse → tantivy → hydrate).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    missing_docs,
+    clippy::cast_possible_truncation
+)]
 
 use std::sync::Arc;
 
@@ -18,7 +23,7 @@ use kestrel_storage::{IndexDoc, IndexService, SearchService, StorageService};
 
 fn bench_search(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    let (search, index, _dir) = rt.block_on(async {
         let (dir, paths) = temp_paths();
         paths.ensure().unwrap();
         let ids = Arc::new(SequentialIds::new());
@@ -27,35 +32,34 @@ fn bench_search(c: &mut Criterion) {
         storage.list_accounts().await.unwrap();
         let index = IndexService::spawn(&paths.index_dir(), storage.clone(), clock).unwrap();
         let search = SearchService::from_index(&index, storage.clone());
+        (search, index, dir)
+    });
 
-        let folder = kestrel_core::ids::FolderId::from_uuid(uuid::Uuid::now_v7());
-        let account = kestrel_core::ids::AccountId::from_uuid(uuid::Uuid::now_v7());
-        for (name, count) in [("search_100k", 100_000u64), ("search_500k", 500_000)] {
-            let mut group = c.benchmark_group(name);
-            group.sample_size(20);
-            build_index(&index, count, folder, account).await;
-            group.bench_function("text_query_first_50", |b| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        search
-                            .search(&SearchQuery {
-                                text: Some("budget quarterly".into()),
-                                limit: Some(50),
-                                ..SearchQuery::default()
-                            })
-                            .await
-                            .unwrap();
-                    });
+    let folder = kestrel_core::ids::FolderId::from_uuid(uuid::Uuid::now_v7());
+    let account = kestrel_core::ids::AccountId::from_uuid(uuid::Uuid::now_v7());
+    for (name, count) in [("search_100k", 100_000u64), ("search_500k", 500_000)] {
+        let mut group = c.benchmark_group(name);
+        group.sample_size(20);
+        rt.block_on(build_index(&index, count, folder, account));
+        group.bench_function("text_query_first_50", |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    search
+                        .search(&SearchQuery {
+                            text: Some("budget quarterly".into()),
+                            limit: Some(50),
+                            ..SearchQuery::default()
+                        })
+                        .await
+                        .unwrap();
                 });
             });
-            group.finish();
-        }
-        drop(dir);
-    });
+        });
+        group.finish();
+    }
 }
 
 /// Benches are 64-bit-hosted; `u64` counters are bounded by `count`.
-#[allow(clippy::cast_possible_truncation)]
 async fn build_index(
     index: &kestrel_storage::IndexHandle,
     count: u64,
@@ -89,7 +93,6 @@ async fn build_index(
         }
         index.add_fire_and_forget(docs).await;
     }
-    // Wait for the commit ticker to settle before measuring.
     index.commit().await.unwrap();
 }
 

@@ -83,8 +83,11 @@ impl SearchHandle {
             else {
                 continue;
             };
-            // Authoritative row from SQLite (events-as-hints doctrine).
-            let load = self.storage.get_message(id).await?;
+            // Authoritative row from SQLite (events-as-hints doctrine);
+            // skip missing rows (deleted between index and search).
+            let Ok(load) = self.storage.get_message(id).await else {
+                continue;
+            };
             let snippet = snippet_gen
                 .as_ref()
                 .map(|sg| sg.snippet_from_doc(&doc).to_html());
