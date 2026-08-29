@@ -1336,6 +1336,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix 1.1.4",
@@ -4079,6 +4080,7 @@ name = "kestrel-tui"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "futures",
  "kestrel-core",
  "kestrel-engine",
  "pulldown-cmark",
@@ -4089,6 +4091,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
