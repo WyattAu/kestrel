@@ -71,6 +71,9 @@ pub enum KestrelError {
     /// Server rejected credentials.
     #[error("auth.credentials_rejected")]
     CredentialsRejected,
+    /// SASL exchange failed locally (malformed challenge).
+    #[error("auth.sasl")]
+    CredentialsRejectedSaslx { detail: String },
     /// `OAuth2` refresh failed (expired/revoked token).
     #[error("auth.oauth_refresh_failed")]
     OAuthRefreshFailed { detail: String },
@@ -194,6 +197,7 @@ impl KestrelError {
             | Self::CredentialsRejected
             | Self::OAuthRefreshFailed { .. }
             | Self::KeyringUnavailable { .. }
+            | Self::CredentialsRejectedSaslx { .. }
             | Self::DbCorrupt { .. }
             | Self::MigrationFailed { .. }
             | Self::DraftInvalid { .. } => RecoveryClass::UserAction,
@@ -235,6 +239,7 @@ impl KestrelError {
             Self::Cancelled => "protocol.cancelled",
             Self::MalformedCommand { .. } => "protocol.malformed_command",
             Self::CredentialsRejected => "auth.credentials_rejected",
+            Self::CredentialsRejectedSaslx { .. } => "auth.sasl",
             Self::OAuthRefreshFailed { .. } => "auth.oauth_refresh_failed",
             Self::KeyringUnavailable { .. } => "auth.keyring_unavailable",
             Self::TlsHandshake { .. } => "transport.tls_handshake",
@@ -281,6 +286,7 @@ mod tests {
             KestrelError::Cancelled,
             KestrelError::MalformedCommand { detail: "d".into() },
             KestrelError::CredentialsRejected,
+            KestrelError::CredentialsRejectedSaslx { detail: "d".into() },
             KestrelError::OAuthRefreshFailed { detail: "d".into() },
             KestrelError::KeyringUnavailable { detail: "d".into() },
             KestrelError::TlsHandshake { detail: "d".into() },

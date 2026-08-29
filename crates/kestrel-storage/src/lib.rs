@@ -10,6 +10,7 @@ pub mod blob;
 pub mod db;
 pub mod error;
 pub mod index;
+pub mod mail_store_impl;
 pub mod ops;
 pub mod search;
 pub mod store;

@@ -4,6 +4,7 @@
 
 use std::io::{Read as _, Write as _};
 
+use kestrel_core::secrets::SecretString;
 use sequoia_openpgp::{
     Cert, KeyHandle, Result as SqResult, armor,
     cert::prelude::CertBuilder,
@@ -17,10 +18,7 @@ use sequoia_openpgp::{
     types::SymmetricAlgorithm,
 };
 
-use crate::{
-    credentials::SecretString,
-    error::{CryptoError, CryptoResult},
-};
+use crate::error::{CryptoError, CryptoResult};
 
 static POLICY: StandardPolicy<'_> = StandardPolicy::new();
 
@@ -305,8 +303,8 @@ mod tests {
 
     use super::*;
 
-    fn empty_pw() -> crate::credentials::SecretString {
-        crate::credentials::SecretString::new(String::new())
+    fn empty_pw() -> SecretString {
+        SecretString::new(String::new())
     }
 
     #[test]

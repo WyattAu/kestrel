@@ -4,59 +4,19 @@
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use hmac::{Hmac, Mac};
+use kestrel_core::{
+    error::KestrelError,
+    sasl::{SaslMechanism, SaslSession},
+    secrets::SecretString,
+};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
-use crate::{
-    credentials::SecretString,
-    error::{CryptoError, CryptoResult},
-};
+fn map_sasl(detail: String) -> KestrelError {
+    KestrelError::CredentialsRejectedSaslx { detail }
+}
 
 type HmacSha256 = Hmac<Sha256>;
-
-/// A step-wise SASL exchange.
-pub trait SaslSession {
-    /// The mechanism name (IMAP `AUTHENTICATE <name>`).
-    fn mechanism(&self) -> SaslMechanism;
-
-    /// Initial response bytes (SASL IR), when the mechanism supports one.
-    fn initial_response(&mut self) -> Option<Vec<u8>>;
-
-    /// Feeds a server challenge, producing the next response.
-    ///
-    /// # Errors
-    /// [`CryptoError::Sasl`] on protocol violations.
-    fn respond(&mut self, challenge: &[u8]) -> CryptoResult<Vec<u8>>;
-
-    /// `true` once the exchange has reached its final client message.
-    fn is_complete(&self) -> bool;
-}
-
-/// Supported mechanisms.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SaslMechanism {
-    /// RFC 4616.
-    Plain,
-    /// Legacy LOGIN.
-    Login,
-    /// RFC 7677.
-    ScramSha256,
-    /// RFC 7628 (`OAuth2`).
-    Xoauth2,
-}
-
-impl SaslMechanism {
-    /// Wire name.
-    #[must_use]
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Plain => "PLAIN",
-            Self::Login => "LOGIN",
-            Self::ScramSha256 => "SCRAM-SHA-256",
-            Self::Xoauth2 => "XOAUTH2",
-        }
-    }
-}
 
 /// Starts a session for the mechanism with the given credentials.
 #[must_use]
@@ -105,8 +65,8 @@ impl SaslSession for PlainSession {
         Some(std::mem::take(&mut self.initial))
     }
 
-    fn respond(&mut self, _challenge: &[u8]) -> CryptoResult<Vec<u8>> {
-        Err(CryptoError::Sasl("no challenge round expected".into()))
+    fn respond(&mut self, _challenge: &[u8]) -> Result<Vec<u8>, KestrelError> {
+        Err(map_sasl("no challenge round expected".into()))
     }
 
     fn is_complete(&self) -> bool {
@@ -135,7 +95,7 @@ impl SaslSession for LoginSession {
         None
     }
 
-    fn respond(&mut self, challenge: &[u8]) -> CryptoResult<Vec<u8>> {
+    fn respond(&mut self, challenge: &[u8]) -> Result<Vec<u8>, KestrelError> {
         match self.stage {
             LoginStage::Initial => {
                 // Server asks "Username:" (base64); answer the username.
@@ -147,7 +107,7 @@ impl SaslSession for LoginSession {
                 self.stage = LoginStage::Done;
                 Ok(self.password.clone().into_bytes())
             }
-            LoginStage::Done => Err(CryptoError::Sasl("exchange already complete".into())),
+            LoginStage::Done => Err(map_sasl("exchange already complete".into())),
         }
     }
 
@@ -203,7 +163,7 @@ impl SaslSession for ScramSha256Session {
         }
     }
 
-    fn respond(&mut self, challenge: &[u8]) -> CryptoResult<Vec<u8>> {
+    fn respond(&mut self, challenge: &[u8]) -> Result<Vec<u8>, KestrelError> {
         match self.state.clone() {
             ScramState::SentFirst => {
                 let server_first = String::from_utf8_lossy(challenge).into_owned();
@@ -214,22 +174,20 @@ impl SaslSession for ScramSha256Session {
                     if let Some(v) = kv.strip_prefix("r=") {
                         v.clone_into(&mut server_nonce);
                     } else if let Some(v) = kv.strip_prefix("s=") {
-                        salt = B64
-                            .decode(v)
-                            .map_err(|e| CryptoError::Sasl(format!("salt: {e}")))?;
+                        salt = B64.decode(v).map_err(|e| map_sasl(format!("salt: {e}")))?;
                     } else if let Some(v) = kv.strip_prefix("i=") {
                         iterations = v
                             .parse()
-                            .map_err(|_| CryptoError::Sasl("bad iteration count".into()))?;
+                            .map_err(|_| map_sasl("bad iteration count".into()))?;
                     }
                 }
                 if server_nonce.len() < self.client_nonce.len()
                     || !server_nonce.starts_with(&self.client_nonce)
                 {
-                    return Err(CryptoError::Sasl("server nonce invalid".into()));
+                    return Err(map_sasl("server nonce invalid".into()));
                 }
                 if iterations == 0 || iterations > 100_000 {
-                    return Err(CryptoError::Sasl(format!(
+                    return Err(map_sasl(format!(
                         "unreasonable iteration count {iterations}"
                     )));
                 }
@@ -252,7 +210,7 @@ impl SaslSession for ScramSha256Session {
                 self.state = ScramState::Complete;
                 Ok(format!("{client_final_bare},p={}", B64.encode(proof)).into_bytes())
             }
-            _ => Err(CryptoError::Sasl("unexpected challenge".into())),
+            _ => Err(map_sasl("unexpected challenge".into())),
         }
     }
 

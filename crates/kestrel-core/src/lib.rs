@@ -24,5 +24,8 @@ pub mod mime;
 pub mod paths;
 pub mod protocol;
 pub mod sanitizer;
+pub mod sasl;
+pub mod secrets;
+pub mod store_model;
 pub mod testkit;
 pub mod threading;

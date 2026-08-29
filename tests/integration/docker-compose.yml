@@ -1,0 +1,35 @@
+# Integration fixtures (docs/testing-strategy.md §5).
+# Dovecot: IMAP on 1143 (cleartext, test-only), LMTP on 1124.
+# Greenmail: SMTP on 1025, IMAP on 1144.
+# Ports are non-standard to avoid colliding with local services.
+
+services:
+  dovecot:
+    image: dovecot/dovecot:2.3.21
+    ports:
+      - "1143:143"
+      - "1124:24"
+    volumes:
+      - ./dovecot/conf.d:/etc/dovecot/conf.d:ro
+      - dovecot-mail:/var/mail
+    entrypoint:
+      - sh
+      - -c
+      - |
+        mkdir -p /var/mail/kestrel/Maildir/cur /var/mail/kestrel/Maildir/new /var/mail/kestrel/Maildir/tmp /var/mail/kestrel/Sent /var/mail/kestrel/Archive
+        chown -R 1000:1000 /var/mail
+        echo 'kestrel:{PLAIN}testpass:1000:1000::/var/mail/kestrel' > /etc/dovecot/users
+        dovecot -F
+
+  greenmail:
+    image: greenmail/standalone:2.0.1
+    ports:
+      - "1025:25"
+      - "1144:143"
+    environment:
+      # hostname=0.0.0.0 makes the bind reachable through the published
+      # port (default binds container-loopback only).
+      GREENMAIL_OPTS: "-Dgreenmail.smtp.hostname=0.0.0.0 -Dgreenmail.smtp.port=25 -Dgreenmail.imap.hostname=0.0.0.0 -Dgreenmail.imap.port=143 -Dgreenmail.users=kestrel:testpass -Dgreenmail.auth.disabled"
+
+volumes:
+  dovecot-mail:

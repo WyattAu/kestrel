@@ -22,6 +22,12 @@ struct FolderDbRow {
     highest_modseq: i64,
 }
 
+/// MAX(uid) row shape.
+#[derive(sqlx::FromRow)]
+struct MaxUidRow {
+    uid: Option<i64>,
+}
+
 /// Single-id row shape for lookup queries.
 #[derive(sqlx::FromRow)]
 pub(crate) struct IdOnly {
@@ -182,6 +188,40 @@ impl Store {
             self.clock.now_unix_ms()
         )
         .execute(&self.db.data.write)
+        .await?;
+        Ok(())
+    }
+
+    // ---- sync cursors (cache.db) ---------------------------------------------
+
+    /// Highest stored UID in a folder.
+    pub(crate) async fn max_uid(&self, folder: FolderId) -> StorageResult<Option<u32>> {
+        let row = sqlx::query_as!(
+            MaxUidRow,
+            "SELECT MAX(uid) AS uid FROM messages WHERE folder_id = ?1",
+            folder.to_string()
+        )
+        .fetch_one(&self.db.cache.read)
+        .await?;
+        Ok(row.uid.map(|u| u32::try_from(u.max(0)).unwrap_or(0)))
+    }
+
+    /// Persists sync cursors for a folder.
+    pub(crate) async fn update_sync_cursors(
+        &self,
+        folder: FolderId,
+        uid_validity: u32,
+        highest_modseq: Option<u64>,
+    ) -> StorageResult<()> {
+        sqlx::query!(
+            "UPDATE folders SET uid_validity = ?2,
+                    highest_modseq = COALESCE(?3, highest_modseq)
+             WHERE id = ?1",
+            folder.to_string(),
+            i64::from(uid_validity),
+            highest_modseq.map(i64::try_from).transpose().ok().flatten()
+        )
+        .execute(&self.db.cache.write)
         .await?;
         Ok(())
     }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE folders SET uid_validity = ?2,\n                    highest_modseq = COALESCE(?3, highest_modseq)\n             WHERE id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "93351989adad8807ed565925a3c5e78b1dc7843e43f22c476caae2ff5f5ac4e4"
+}

@@ -5,14 +5,16 @@
 
 use std::sync::Arc;
 
+pub use kestrel_core::store_model::{
+    FolderRow, IngestBatch, IngestMessage, IngestStats, NewFolder, OutboxEnvelope, OutboxRow,
+};
 use kestrel_core::{
     clock::Clock,
     error::KestrelError,
     ids::{AccountId, BlobHash, FolderId, IdGenerator, MessageId, OutboxId},
-    mime::ParsedMessage,
     protocol::{
-        AccountSummary, Address, Flag, FlagOp, FolderRole, FolderSummary, MailProtocol,
-        MessagePage, MessageSummary, MessageView, Provider, SortSpec, Window,
+        AccountSummary, FlagOp, FolderSummary, MailProtocol, MessagePage, MessageSummary,
+        MessageView, Provider, SortSpec, Window,
     },
 };
 use tokio::sync::{mpsc, oneshot};
@@ -246,6 +248,25 @@ pub enum StoreCommand {
         reply: oneshot::Sender<Result<u64, StorageError>>,
     },
 
+    /// Highest stored UID in a folder (delta sync start point).
+    MaxUid {
+        /// Folder.
+        folder: FolderId,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<Option<u32>, StorageError>>,
+    },
+    /// Persist sync cursors (UIDVALIDITY / HIGHESTMODSEQ).
+    UpdateSyncCursors {
+        /// Folder.
+        folder: FolderId,
+        /// New UIDVALIDITY (0 = keep).
+        uid_validity: u32,
+        /// New HIGHESTMODSEQ (None = keep).
+        highest_modseq: Option<u64>,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), StorageError>>,
+    },
+
     /// Read a data.db setting.
     GetSetting {
         /// Key.
@@ -277,115 +298,6 @@ pub struct NewAccount {
     pub protocol: MailProtocol,
     /// `password` | `oauth2`.
     pub auth_kind: String,
-}
-
-/// Folder row as stored (cache.db).
-#[derive(Clone, Debug)]
-pub struct FolderRow {
-    /// Folder id.
-    pub id: FolderId,
-    /// Owning account.
-    pub account: AccountId,
-    /// Server name.
-    pub remote_name: String,
-    /// Attributes JSON array.
-    pub attributes: Vec<String>,
-    /// Canonical role.
-    pub role: Option<FolderRole>,
-    /// Hierarchy delimiter.
-    pub delimiter: String,
-    /// IMAP `UIDVALIDITY` cursor.
-    pub uid_validity: u32,
-    /// CONDSTORE `HIGHESTMODSEQ` cursor.
-    pub highest_modseq: u64,
-}
-
-/// New-folder payload.
-#[derive(Clone, Debug)]
-pub struct NewFolder {
-    /// Owning account (must exist in data.db — cross-DB FK, ADR 0009).
-    pub account: AccountId,
-    /// Server name.
-    pub remote_name: String,
-    /// Attributes (e.g. `\HasNoChildren`).
-    pub attributes: Vec<String>,
-    /// Canonical role, if recognized.
-    pub role: Option<FolderRole>,
-    /// Hierarchy delimiter.
-    pub delimiter: String,
-    /// `UIDVALIDITY` (0 when not yet selected).
-    pub uid_validity: u32,
-    /// `HIGHESTMODSEQ` (0 when unknown).
-    pub highest_modseq: u64,
-}
-
-/// One message ready for ingestion (parsed upstream by the sync engine).
-#[derive(Clone, Debug)]
-pub struct IngestMessage {
-    /// Destination folder.
-    pub folder: FolderId,
-    /// IMAP UID.
-    pub uid: u32,
-    /// `INTERNALDATE` (unix ms).
-    pub internal_date: i64,
-    /// Server flags.
-    pub flags: Vec<Flag>,
-    /// Parsed MIME tree (ADR 0002).
-    pub parsed: ParsedMessage,
-    /// Raw message blob (already in CAS; hash only).
-    pub raw_blob: Option<BlobHash>,
-    /// Raw size in bytes.
-    pub raw_size: u64,
-}
-
-/// Ingestion batch: applied in one transaction.
-#[derive(Clone, Debug, Default)]
-pub struct IngestBatch {
-    /// Messages.
-    pub messages: Vec<IngestMessage>,
-}
-
-/// Ingestion outcome counters.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct IngestStats {
-    /// New rows.
-    pub inserted: u64,
-    /// Updated rows (uid collisions).
-    pub updated: u64,
-}
-
-/// Envelope persisted beside the outbox raw blob.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct OutboxEnvelope {
-    /// From.
-    pub from: Address,
-    /// To.
-    pub to: Vec<Address>,
-    /// Cc.
-    pub cc: Vec<Address>,
-    /// Bcc.
-    pub bcc: Vec<Address>,
-    /// Subject.
-    pub subject: String,
-}
-
-/// Outbox row as returned to the outbox service.
-#[derive(Clone, Debug)]
-pub struct OutboxRow {
-    /// Entry id.
-    pub id: OutboxId,
-    /// Owning account.
-    pub account: AccountId,
-    /// CAS hash of the raw RFC 5322.
-    pub raw_blob: BlobHash,
-    /// Envelope.
-    pub envelope: OutboxEnvelope,
-    /// Retry counter.
-    pub retry_count: u32,
-    /// Last error summary.
-    pub last_error: Option<String>,
-    /// Creation time.
-    pub created_at: i64,
 }
 
 /// Full message load returned by `GetMessage`.
@@ -751,6 +663,34 @@ impl StorageHandle {
         .await
     }
 
+    /// Highest stored UID in a folder (`None` when empty).
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn max_uid(&self, folder: FolderId) -> Result<Option<u32>, KestrelError> {
+        self.call(move |reply| StoreCommand::MaxUid { folder, reply })
+            .await
+    }
+
+    /// Persists sync cursors for a folder.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn update_sync_cursors(
+        &self,
+        folder: FolderId,
+        uid_validity: u32,
+        highest_modseq: Option<u64>,
+    ) -> Result<(), KestrelError> {
+        self.call(move |reply| StoreCommand::UpdateSyncCursors {
+            folder,
+            uid_validity,
+            highest_modseq,
+            reply,
+        })
+        .await
+    }
+
     /// Reads a data.db setting.
     ///
     /// # Errors
@@ -919,6 +859,12 @@ fn reply_open_error(cmd: StoreCommand, err: &StorageError) {
         C::GcSweep { reply, .. } => {
             let _ = reply.send(Err(err));
         }
+        C::MaxUid { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::UpdateSyncCursors { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
         C::GetSetting { reply, .. } => {
             let _ = reply.send(Err(err));
         }
@@ -1052,6 +998,21 @@ async fn dispatch(store: &Arc<crate::ops::Store>, cmd: StoreCommand) {
             reply,
         } => {
             let _ = reply.send(store.gc_sweep(now, grace_ms).await);
+        }
+        C::MaxUid { folder, reply } => {
+            let _ = reply.send(store.max_uid(folder).await);
+        }
+        C::UpdateSyncCursors {
+            folder,
+            uid_validity,
+            highest_modseq,
+            reply,
+        } => {
+            let _ = reply.send(
+                store
+                    .update_sync_cursors(folder, uid_validity, highest_modseq)
+                    .await,
+            );
         }
         C::GetSetting { key, reply } => {
             let _ = reply.send(store.get_setting(&key).await);

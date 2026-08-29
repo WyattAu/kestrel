@@ -5,43 +5,12 @@
 
 use std::{collections::HashMap, sync::RwLock};
 
-use kestrel_core::ids::AccountId;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use kestrel_core::{ids::AccountId, secrets::SecretString};
 
 use crate::error::{CryptoError, CryptoResult};
 
 /// Keyring service name.
 const SERVICE: &str = "kestrel";
-
-/// A zeroized-on-drop secret string.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct SecretString(String);
-
-impl SecretString {
-    /// Wraps an owned secret.
-    #[must_use]
-    pub fn new(value: String) -> Self {
-        Self(value)
-    }
-
-    /// Reveals the secret.
-    #[must_use]
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for SecretString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SecretString(***)")
-    }
-}
-
-impl PartialEq for SecretString {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
 
 /// Credential kinds stored per account.
 #[derive(Clone, Debug, PartialEq)]

@@ -15,5 +15,9 @@ pub mod tls;
 
 pub use credentials::{CredentialService, CredentialStore, InMemoryStore, KeyringStore};
 pub use error::{CryptoError, CryptoResult};
-pub use sasl::{SaslMechanism, SaslSession};
+pub use kestrel_core::{
+    sasl::{SaslMechanism, SaslSession},
+    secrets::SecretString,
+};
+pub use sasl::start;
 pub use tls::tls_config;

@@ -1,13 +1,13 @@
 # nextest configuration (docs/testing-strategy.md §5).
-# Default profile: everything except docker-gated integration tests.
-# Integration profile: only docker-gated tests, with retries for
-# network-adjacent flakiness.
+# Default profile: everything except docker-gated integration tests
+# (their names start with `integration_` and they are #[ignore]d).
+# Integration profile: only the docker-gated tests, with retries.
 
 [profile.default]
+default-filter = 'not test(integration)'
 slow-timeout = { period = "30s", terminate-after = 180, grace-period = "10s" }
 
 [profile.integration]
 default-filter = 'test(integration)'
-run-ignored = "only"
 slow-timeout = { period = "120s", terminate-after = 600, grace-period = "30s" }
 retries = { backoff = "fixed", count = 2, delay = "5s" }

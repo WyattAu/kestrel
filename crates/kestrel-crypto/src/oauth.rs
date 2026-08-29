@@ -9,11 +9,12 @@
 use std::{fmt::Write as _, net::SocketAddr};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use kestrel_core::secrets::SecretString;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    credentials::{CredentialService, CredentialStore, SecretString},
+    credentials::{CredentialService, CredentialStore},
     error::{CryptoError, CryptoResult},
 };
 
