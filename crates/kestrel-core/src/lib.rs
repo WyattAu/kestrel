@@ -23,6 +23,7 @@ pub mod links;
 pub mod mime;
 pub mod paths;
 pub mod protocol;
+pub mod provider;
 pub mod sanitizer;
 pub mod sasl;
 pub mod secrets;

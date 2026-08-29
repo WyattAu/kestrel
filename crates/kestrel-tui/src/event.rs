@@ -166,6 +166,9 @@ async fn handle_key(
             }
             _ => {}
         },
+        Mode::Setup => {
+            handle_setup_key(handle, state, key).await;
+        }
         Mode::Normal => match key.code {
             KeyCode::Char('q') => {
                 state.mode = Mode::Confirm;
@@ -208,6 +211,14 @@ async fn handle_key(
             }
             KeyCode::Char('c') => {
                 compose_new(handle, state, config).await;
+            }
+            KeyCode::Char('S') => {
+                // Setup: open the account form.
+                state.mode = Mode::Setup;
+                state.setup_email.clear();
+                state.setup_password.clear();
+                state.setup_imap_host.clear();
+                state.status = "Setup: fill fields, Enter to connect".into();
             }
             _ => {}
         },
@@ -548,6 +559,91 @@ async fn compose_new(
         .await;
     if matches!(rx.await, Ok(Reply::Accepted)) {
         state.status = "message queued".into();
+    }
+}
+
+/// Handles keys in setup mode.
+async fn handle_setup_key(handle: &EngineHandle, state: &mut AppState, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            state.mode = Mode::Normal;
+            state.status = "setup cancelled".into();
+        }
+        KeyCode::Enter => {
+            state.mode = Mode::Normal;
+            state.status = "connecting…".into();
+            add_account_from_setup(handle, state).await;
+        }
+        KeyCode::Tab => {
+            state.setup_field = (state.setup_field + 1) % 3;
+        }
+        KeyCode::Backspace => match state.setup_field {
+            0 => {
+                state.setup_email.pop();
+            }
+            1 => {
+                state.setup_password.pop();
+            }
+            _ => {
+                state.setup_imap_host.pop();
+            }
+        },
+        KeyCode::Char(c) => match state.setup_field {
+            0 => state.setup_email.push(c),
+            1 => state.setup_password.push(c),
+            _ => state.setup_imap_host.push(c),
+        },
+        _ => {}
+    }
+}
+
+async fn add_account_from_setup(handle: &EngineHandle, state: &mut AppState) {
+    use kestrel_core::{
+        provider::{detect_provider, provider_preset},
+        secrets::SecretString,
+    };
+
+    let email = state.setup_email.clone();
+    let password = state.setup_password.clone();
+    let imap_host = state.setup_imap_host.clone();
+    if email.is_empty() || !email.contains('@') {
+        state.status = "setup: valid email required".into();
+        return;
+    }
+    let provider = detect_provider(&email);
+    let mut config = provider_preset(&provider, &email);
+    if !imap_host.is_empty() {
+        if let Some((h, p)) = imap_host.split_once(':') {
+            config.imap_host = h.to_owned();
+            config.imap_port = p.parse().unwrap_or(config.imap_port);
+        } else {
+            config.imap_host = imap_host;
+        }
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let _ = handle
+        .commands
+        .send(Command {
+            id: next_request_id(),
+            origin: FrontendKind::Tui,
+            payload: CommandPayload::AddAccount {
+                config,
+                password: SecretString::new(password),
+                reply: tx,
+            },
+        })
+        .await;
+    match rx.await {
+        Ok(Reply::Accounts(accounts)) => {
+            state.status = format!("{} account(s) — syncing", accounts.len());
+            state.accounts = accounts;
+        }
+        Ok(Reply::Err(e)) => {
+            state.status = format!("setup failed: {e}");
+        }
+        _ => {
+            state.status = "setup: unexpected reply".into();
+        }
     }
 }
 

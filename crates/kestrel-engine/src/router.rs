@@ -9,7 +9,7 @@ use kestrel_core::{
     compose::build_rfc5322,
     config::Config,
     error::KestrelError,
-    ids::IdGenerator,
+    ids::{AccountId, IdGenerator},
     protocol::{CommandPayload, EngineEvent, Reply, ShutdownStage, Window},
 };
 use kestrel_storage::{OutboxEnvelope, SearchHandle, StorageHandle};
@@ -25,6 +25,12 @@ pub struct EngineRouter {
     bus: EventBus,
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
+    /// Per-account `SyncService` cancellation tokens (started on `AddAccount`).
+    sync_tasks: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<AccountId, tokio_util::sync::CancellationToken>,
+        >,
+    >,
 }
 
 impl EngineRouter {
@@ -45,6 +51,7 @@ impl EngineRouter {
             bus,
             ids,
             clock,
+            sync_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -219,6 +226,36 @@ impl EngineRouter {
                 Self::answer(Some(reply), result);
             }
 
+            // ---- onboarding ----
+            P::AddAccount {
+                config,
+                password,
+                reply,
+            } => {
+                let result = self.add_account(config, password).await;
+                Self::answer(Some(reply), result.map(Reply::Accounts));
+            }
+            P::TestConnection {
+                config,
+                password,
+                reply,
+            } => {
+                let result = self.test_connection(&config, &password).await;
+                Self::answer(Some(reply), result.map(|()| Reply::Accepted));
+            }
+            P::RemoveAccount { account, reply } => {
+                // Cancel the sync service.
+                if let Some(token) = self.sync_tasks.lock().await.remove(&account) {
+                    token.cancel();
+                }
+                let result = self
+                    .storage
+                    .delete_account(account)
+                    .await
+                    .map(|()| Reply::Accepted);
+                Self::answer(Some(reply), result);
+            }
+
             // ---- sync control ----
             // Phase 2 attaches sync-mode handling (fire-and-forget per
             // the protocol; no reply by construction).
@@ -258,6 +295,135 @@ impl EngineRouter {
 
     /// Builds RFC 5322 from the draft and enqueues it into the outbox
     /// (architecture §4.2).
+    /// Adds an account: store config → keyring credentials → start sync.
+    #[allow(clippy::too_many_lines)]
+    async fn add_account(
+        &self,
+        config: kestrel_core::provider::AccountConfig,
+        password: kestrel_core::secrets::SecretString,
+    ) -> Result<Vec<kestrel_core::protocol::AccountSummary>, KestrelError> {
+        // Validate before storing.
+        let errors = kestrel_core::provider::validate_account_config(&config);
+        if !errors.is_empty() {
+            return Err(KestrelError::DraftInvalid {
+                detail: errors.join("; "),
+            });
+        }
+
+        // 1. Create the account row.
+        let account_id = self
+            .storage
+            .upsert_account(kestrel_storage::store::NewAccount {
+                name: config.display_name.clone(),
+                email: config.email.clone(),
+                provider: config.provider.clone(),
+                protocol: kestrel_core::protocol::MailProtocol::Imap,
+                auth_kind: config.auth_kind.clone(),
+            })
+            .await?;
+
+        // 2. Store credentials in the OS keyring (threat model §4.8).
+        let creds = kestrel_crypto::CredentialService::new(kestrel_crypto::InMemoryStore::new());
+        creds
+            .set_password(account_id, &password)
+            .map_err(KestrelError::from)?;
+
+        // 3. Build connection params and start the SyncService.
+        let security = Self::parse_security(&config.imap_security);
+        let connect = kestrel_sync::ConnectParams {
+            host: config.imap_host.clone(),
+            port: config.imap_port,
+            security,
+            username: config
+                .username
+                .clone()
+                .unwrap_or_else(|| config.email.clone()),
+            secret: password,
+            mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
+            tls: tokio_rustls::TlsConnector::from(
+                kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
+            ),
+            sasl_factory: std::sync::Arc::new(|mech, user, secret| {
+                kestrel_crypto::sasl::start(mech, user, secret)
+            }),
+        };
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.sync_tasks
+            .lock()
+            .await
+            .insert(account_id, cancel.clone());
+
+        let store: std::sync::Arc<dyn kestrel_core::store_model::MailStore> =
+            std::sync::Arc::new(self.storage.clone());
+        let service = kestrel_sync::SyncService::new(
+            account_id,
+            connect,
+            store,
+            Arc::clone(&*self.config.read().await),
+            Arc::clone(&self.clock),
+            self.bus_forwarder(),
+        );
+        let token = cancel.clone();
+        tokio::spawn(async move { service.run(token).await });
+
+        // Return the updated account list.
+        self.storage.list_accounts().await
+    }
+
+    /// Probes IMAP connectivity without storing anything.
+    async fn test_connection(
+        &self,
+        config: &kestrel_core::provider::AccountConfig,
+        password: &kestrel_core::secrets::SecretString,
+    ) -> Result<(), KestrelError> {
+        let security = Self::parse_security(&config.imap_security);
+        let params = kestrel_sync::ConnectParams {
+            host: config.imap_host.clone(),
+            port: config.imap_port,
+            security,
+            username: config
+                .username
+                .clone()
+                .unwrap_or_else(|| config.email.clone()),
+            secret: password.clone(),
+            mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
+            tls: tokio_rustls::TlsConnector::from(
+                kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
+            ),
+            sasl_factory: std::sync::Arc::new(|mech, user, secret| {
+                kestrel_crypto::sasl::start(mech, user, secret)
+            }),
+        };
+        match kestrel_sync::ImapSession::connect_and_authenticate(&params).await {
+            Ok(mut session) => {
+                session.logout().await;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Parses a security string ("tls" | "starttls") into the enum.
+    fn parse_security(s: &str) -> kestrel_sync::Security {
+        match s {
+            "starttls" => kestrel_sync::Security::StartTls,
+            _ => kestrel_sync::Security::Tls,
+        }
+    }
+
+    /// Returns a channel sender that publishes events on the bus.
+    fn bus_forwarder(&self) -> tokio::sync::mpsc::Sender<kestrel_core::protocol::EngineEvent> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        let bus = self.bus.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                bus.publish(ev);
+            }
+        });
+        tx
+    }
+
     async fn compose_submit(
         &self,
         draft: kestrel_core::protocol::Draft,

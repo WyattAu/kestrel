@@ -1,49 +1,155 @@
-// Slint UI definition (ADR 0001): native shell with folder tree,
-// message list, and preview chrome. The HTML body renders in the
-// sandboxed wry viewport (viewport.rs), not in Slint.
+// Slint UI (ADR 0001): native shell + account setup wizard.
+// The HTML body renders in the sandboxed wry viewport (viewport.rs).
 
-import { Button, LineEdit } from "std-widgets.slint";
+import { Button, LineEdit, ComboBox, CheckBox } from "std-widgets.slint";
 
 export component AppWindow inherits Window {
     title: "Kestrel";
     preferred-width: 1200px;
     preferred-height: 800px;
 
-    in-out property <string> status-text: "Starting...";
+    // ─── State ───
+    in-out property <string> status-text: "Welcome";
     in-out property <string> connection-state: "disconnected";
-    in-out property <string> selected-subject: "";
-    in-out property <string> selected-from: "";
     in-out property <int> message-count: 0;
     in-out property <int> folder-count: 0;
-    in-out property <string> search-query: "";
+    in-out property <int> account-count: 0;
+    in-out property <string> selected-subject: "";
+    in-out property <string> selected-from: "";
+    in-out property <bool> show-setup: account-count == 0;
+    in-out property <bool> setup-busy: false;
+    in-out property <string> setup-error: "";
 
+    // Setup wizard fields
+    in-out property <string> setup-display-name: "";
+    in-out property <string> setup-email: "";
+    in-out property <string> setup-password: "";
+    in-out property <string> setup-imap-host: "";
+    in-out property <string> setup-smtp-host: "";
+
+    // Folder names for the sidebar (model)
+    in-out property <[string]> folder-names: [];
+
+    callback add-account(string, string, string, string, string);
     callback refresh();
     callback compose();
     callback reply();
-    callback delete-selected();
-    callback search(string);
     callback open-body-view();
+    callback search(string);
 
-    HorizontalLayout {
+    // ─── Setup Wizard (shown when no accounts) ───
+    if show-setup : Rectangle {
+        background: #1e1e2e;
+        Rectangle {
+            width: 480px;
+            height: 520px;
+            border-radius: 12px;
+            background: #313244;
+            drop-shadow-blur: 20px;
+            drop-shadow-color: #00000080;
+
+            VerticalLayout {
+                padding: 32px;
+                spacing: 12px;
+                alignment: start;
+
+                Text {
+                    text: "Add your email account";
+                    font-size: 22px;
+                    font-weight: 700;
+                    color: #cdd6f4;
+                }
+                Text {
+                    text: "Kestrel will sync your mail locally.";
+                    font-size: 13px;
+                    color: #a6adc8;
+                }
+                Rectangle { height: 8px; }
+
+                Text { text: "Display name"; color: #a6adc8; font-size: 12px; }
+                LineEdit {
+                    placeholder-text: "John Doe";
+                    text <=> root.setup-display-name;
+                }
+
+                Text { text: "Email address"; color: #a6adc8; font-size: 12px; }
+                LineEdit {
+                    placeholder-text: "you@example.com";
+                    text <=> root.setup-email;
+                }
+
+                Text { text: "Password"; color: #a6adc8; font-size: 12px; }
+                LineEdit {
+                    placeholder-text: "••••••••";
+                    text <=> root.setup-password;
+                    input-type: password;
+                }
+
+                Rectangle { height: 8px; }
+
+                Text { text: "IMAP server (incoming)"; color: #a6adc8; font-size: 12px; }
+                LineEdit {
+                    placeholder-text: "imap.example.com:993";
+                    text <=> root.setup-imap-host;
+                }
+
+                Text { text: "SMTP server (outgoing)"; color: #a6adc8; font-size: 12px; }
+                LineEdit {
+                    placeholder-text: "smtp.example.com:587";
+                    text <=> root.setup-smtp-host;
+                }
+
+                // Error message
+                if root.setup-error != "" : Text {
+                    text: root.setup-error;
+                    color: #f38ba8;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+
+                Rectangle { height: 4px; }
+
+                Button {
+                    text: root.setup-busy ? "Connecting…" : "Add Account";
+                    enabled: !root.setup-busy && root.setup-email != "" && root.setup-password != "" && root.setup-imap-host != "";
+                    clicked => {
+                        root.add-account(
+                            root.setup-display-name,
+                            root.setup-email,
+                            root.setup-password,
+                            root.setup-imap-host,
+                            root.setup-smtp-host
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Main UI (shown when accounts exist) ───
+    if !show-setup : HorizontalLayout {
         // Folder pane
         VerticalLayout {
             min-width: 200px;
             max-width: 250px;
+            padding: 8px;
             Rectangle {
                 background: #1e1e2e;
+                border-radius: 8px;
                 VerticalLayout {
                     padding: 8px;
                     Text {
-                        text: "Folders";
+                        text: "Folders (" + root.folder-count + ")";
                         font-size: 14px;
                         font-weight: 700;
                         color: #cdd6f4;
                     }
                     Rectangle { height: 1px; background: #45475a; }
-                    Text {
-                        text: root.folder-count + " folders";
-                        font-size: 12px;
-                        color: #6c7086;
+                    // Folder list
+                    for folder-name in root.folder-names : Text {
+                        text: folder-name;
+                        font-size: 13px;
+                        color: #a6adc8;
                     }
                 }
             }
@@ -52,12 +158,13 @@ export component AppWindow inherits Window {
         // Message list pane
         VerticalLayout {
             min-width: 350px;
+            padding: 8px;
+            spacing: 8px;
             HorizontalLayout {
-                padding: 8px;
                 spacing: 8px;
                 LineEdit {
-                    placeholder-text: "Search...";
-                    text <=> root.search-query;
+                    placeholder-text: "Search…";
+                    width: 200px;
                     edited(text) => { root.search(text); }
                 }
                 Button { text: "Compose"; clicked => { root.compose(); } }
@@ -65,6 +172,7 @@ export component AppWindow inherits Window {
             }
             Rectangle {
                 background: #181825;
+                border-radius: 8px;
                 Text {
                     text: root.message-count + " messages";
                     font-size: 12px;
@@ -73,7 +181,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        // Preview pane (native text; HTML opens in sandboxed viewport)
+        // Preview pane
         VerticalLayout {
             min-width: 300px;
             padding: 12px;
@@ -96,12 +204,12 @@ export component AppWindow inherits Window {
         }
     }
 
-    // Status bar
+    // ─── Status bar ───
     Rectangle {
-        height: 24px;
+        height: 26px;
         background: #313244;
         Text {
-            text: root.status-text + " │ " + root.connection-state;
+            text: root.status-text + "  │  " + root.connection-state;
             font-size: 12px;
             color: #a6adc8;
             vertical-alignment: center;

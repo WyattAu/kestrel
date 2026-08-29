@@ -280,6 +280,7 @@ fn draw_status_bar(f: &mut Frame<'_>, state: &AppState, area: Rect) {
 
 fn draw_mode_line(f: &mut Frame<'_>, state: &AppState, area: Rect) {
     let text = match state.mode {
+        Mode::Setup => " Tab:next field │ Enter:connect │ Esc:cancel ",
         Mode::Normal => {
             " j/k:navigate │ Tab:focus │ d:delete │ r:reply │ a:reply-all │ f:forward │ /:search │ c:compose │ q:quit "
         }
@@ -319,9 +320,41 @@ fn format_date(unix_ms: i64) -> String {
     format!("{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
-/// Draws a modal overlay (search box, confirm).
+/// Draws a modal overlay (search box, confirm, setup).
 pub fn draw_modal(f: &mut Frame<'_>, state: &AppState) {
     match state.mode {
+        Mode::Setup => {
+            let area = centered_rect(f.area(), 60, 7);
+            f.render_widget(Clear, area);
+            let fields = [
+                ("Email: ", &state.setup_email),
+                ("Pass:  ", &"*".repeat(state.setup_password.len())),
+                ("IMAP:  ", &state.setup_imap_host),
+            ];
+            let mut lines = vec![Line::from(Span::styled(
+                "  Account Setup  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ))];
+            for (i, (label, value)) in fields.iter().enumerate() {
+                let cursor = if i == state.setup_field { "█" } else { " " };
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(*label, Style::default().fg(Color::Blue)),
+                    Span::raw((*value).clone()),
+                    Span::styled(cursor, Style::default().fg(Color::Yellow)),
+                ]));
+            }
+            lines.push(Line::from(Span::styled(
+                "  Tab:next Enter:connect Esc:cancel",
+                Style::default().fg(Color::DarkGray),
+            )));
+            f.render_widget(
+                Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
+                area,
+            );
+        }
         Mode::Search => {
             let area = centered_rect(f.area(), 50, 3);
             f.render_widget(Clear, area);

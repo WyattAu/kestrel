@@ -149,6 +149,32 @@ pub enum CommandPayload {
     },
 
     // ---- config & lifecycle ---------------------------------------------------
+    /// Add a new mail account (onboarding). Credentials are stored in the
+    /// keyring (never in config/SQLite — threat model §4.8).
+    AddAccount {
+        /// Full server configuration.
+        config: crate::provider::AccountConfig,
+        /// Password (for "password" auth kind); zeroized after storage.
+        password: crate::secrets::SecretString,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// Test connection to the configured servers (without storing).
+    TestConnection {
+        /// Configuration to probe.
+        config: crate::provider::AccountConfig,
+        /// Password for the probe.
+        password: crate::secrets::SecretString,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// Remove an account and all its local data.
+    RemoveAccount {
+        /// Account to remove.
+        account: AccountId,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
     /// New config snapshot (from the config watcher).
     ConfigUpdated {
         /// Immutable snapshot.

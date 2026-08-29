@@ -26,6 +26,8 @@ pub enum Mode {
     Search,
     /// Command-line status (quit confirm etc.).
     Confirm,
+    /// Account setup form.
+    Setup,
 }
 
 /// Pre-materialized windowed model (frame pacing SLA).
@@ -50,6 +52,14 @@ pub struct AppState {
     pub mode: Mode,
     /// Search input buffer.
     pub search_input: String,
+    /// Setup: email field.
+    pub setup_email: String,
+    /// Setup: password field.
+    pub setup_password: String,
+    /// Setup: IMAP host field.
+    pub setup_imap_host: String,
+    /// Setup: active field index (0=email, 1=password, 2=host).
+    pub setup_field: usize,
     /// Status line.
     pub status: String,
     /// Current page offset (windowing).
@@ -71,6 +81,10 @@ impl Default for AppState {
             focus: Focus::Folders,
             mode: Mode::Normal,
             search_input: String::new(),
+            setup_email: String::new(),
+            setup_password: String::new(),
+            setup_imap_host: String::new(),
+            setup_field: 0,
             status: String::new(),
             page_offset: 0,
             window_limit: 50,

@@ -14,9 +14,10 @@ workspace = true
 kestrel-core = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+kestrel-crypto = { workspace = true }
 kestrel-storage = { workspace = true }
 kestrel-sync = { workspace = true }
-kestrel-crypto = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 thiserror = { workspace = true }
