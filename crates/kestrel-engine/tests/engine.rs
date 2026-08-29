@@ -127,7 +127,7 @@ fn attach(payload: CommandPayload, tx: tokio::sync::oneshot::Sender<Reply>) -> C
 async fn engine_boot_accounts_folders_messages_search_outbox() {
     let dir = tempfile::tempdir().unwrap();
     let handle = spawn_engine(dir.path()).await;
-    let mut events = handle.events.resubscribe();
+    let mut events = handle.events();
 
     // EngineStarted carries the protocol version.
     match events.recv().await {
@@ -290,7 +290,7 @@ async fn engine_boot_accounts_folders_messages_search_outbox() {
 async fn shutdown_is_ordered_and_completes() {
     let dir = tempfile::tempdir().unwrap();
     let handle = spawn_engine(dir.path()).await;
-    let mut events = handle.events.resubscribe();
+    let mut events = handle.events();
     let _ = events.recv().await; // EngineStarted
 
     handle

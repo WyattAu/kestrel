@@ -20,6 +20,7 @@ tracing = { workspace = true }
 slint = { version = "1.17", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2"] }
 wry = "0.56"
 uuid = { workspace = true }
+tracing-subscriber = { workspace = true }
 open = "5"
 notify-rust = "4"
 

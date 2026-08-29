@@ -57,7 +57,7 @@ pub async fn run(
 
     // Forward engine broadcast events into the TUI channel.
     let fwd_tx = tx.clone();
-    let mut events = handle.events.resubscribe();
+    let mut events = handle.events();
     tokio::spawn(async move {
         loop {
             match events.recv().await {

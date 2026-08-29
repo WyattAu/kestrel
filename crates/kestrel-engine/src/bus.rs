@@ -49,6 +49,12 @@ impl EventBus {
     pub fn receiver_count(&self) -> usize {
         self.tx.receiver_count()
     }
+
+    /// The underlying sender (for handles that clone fresh receivers).
+    #[must_use]
+    pub fn inner_sender(&self) -> broadcast::Sender<EngineEvent> {
+        self.tx.clone()
+    }
 }
 
 /// Translates broadcast lag into the protocol event.

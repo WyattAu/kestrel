@@ -34,14 +34,36 @@ pub use router::EngineRouter;
 /// Command channel capacity (message-protocol §4).
 pub const COMMAND_CAPACITY: usize = 256;
 
-/// A spawned engine: the frontend's only handles.
+/// A spawned engine: the frontend's only handles. `events` is a fresh
+/// broadcast receiver per clone (each frontend tracks its own lag).
 pub struct EngineHandle {
-    /// Bounded command sender (one per frontend).
+    /// Bounded command sender (clones share the bounded queue).
     pub commands: mpsc::Sender<Command>,
-    /// Event subscription (cloned receivers per frontend task).
-    pub events: tokio::sync::broadcast::Receiver<EngineEvent>,
-    /// Signals full shutdown completion.
-    pub done: oneshot::Receiver<()>,
+    /// Event subscription (this instance's receiver).
+    events_rx: tokio::sync::broadcast::Receiver<EngineEvent>,
+    /// Event sender for cloning fresh receivers.
+    events_tx: tokio::sync::broadcast::Sender<EngineEvent>,
+    /// Signals full shutdown completion (single-consumption).
+    pub done: std::sync::Arc<tokio::sync::Mutex<Option<oneshot::Receiver<()>>>>,
+}
+
+impl Clone for EngineHandle {
+    fn clone(&self) -> Self {
+        Self {
+            commands: self.commands.clone(),
+            events_rx: self.events_tx.subscribe(),
+            events_tx: self.events_tx.clone(),
+            done: std::sync::Arc::clone(&self.done),
+        }
+    }
+}
+
+impl EngineHandle {
+    /// This handle's event receiver.
+    #[must_use]
+    pub fn events(&self) -> tokio::sync::broadcast::Receiver<EngineEvent> {
+        self.events_rx.resubscribe()
+    }
 }
 
 /// Engine assembly over the Phase 1 services (ADR 0011).
@@ -95,6 +117,7 @@ impl Engine {
         }
 
         let bus = EventBus::new();
+        let events_tx = bus.inner_sender();
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (done_tx, done_rx) = oneshot::channel();
 
@@ -197,8 +220,9 @@ impl Engine {
 
         Ok(EngineHandle {
             commands: command_tx,
-            events: bus.subscribe(),
-            done: done_rx,
+            events_rx: events_tx.subscribe(),
+            events_tx,
+            done: std::sync::Arc::new(tokio::sync::Mutex::new(Some(done_rx))),
         })
     }
 }

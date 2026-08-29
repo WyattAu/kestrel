@@ -1,2 +1,110 @@
-// Placeholder — replaced in Phase 4.
-export component AppWindow inherits Window {}
+// Slint UI definition (ADR 0001): native shell with folder tree,
+// message list, and preview chrome. The HTML body renders in the
+// sandboxed wry viewport (viewport.rs), not in Slint.
+
+import { Button, LineEdit } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    title: "Kestrel";
+    preferred-width: 1200px;
+    preferred-height: 800px;
+
+    in-out property <string> status-text: "Starting...";
+    in-out property <string> connection-state: "disconnected";
+    in-out property <string> selected-subject: "";
+    in-out property <string> selected-from: "";
+    in-out property <int> message-count: 0;
+    in-out property <int> folder-count: 0;
+    in-out property <string> search-query: "";
+
+    callback refresh();
+    callback compose();
+    callback reply();
+    callback delete-selected();
+    callback search(string);
+    callback open-body-view();
+
+    HorizontalLayout {
+        // Folder pane
+        VerticalLayout {
+            min-width: 200px;
+            max-width: 250px;
+            Rectangle {
+                background: #1e1e2e;
+                VerticalLayout {
+                    padding: 8px;
+                    Text {
+                        text: "Folders";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: #cdd6f4;
+                    }
+                    Rectangle { height: 1px; background: #45475a; }
+                    Text {
+                        text: root.folder-count + " folders";
+                        font-size: 12px;
+                        color: #6c7086;
+                    }
+                }
+            }
+        }
+
+        // Message list pane
+        VerticalLayout {
+            min-width: 350px;
+            HorizontalLayout {
+                padding: 8px;
+                spacing: 8px;
+                LineEdit {
+                    placeholder-text: "Search...";
+                    text <=> root.search-query;
+                    edited(text) => { root.search(text); }
+                }
+                Button { text: "Compose"; clicked => { root.compose(); } }
+                Button { text: "Reply"; clicked => { root.reply(); } }
+            }
+            Rectangle {
+                background: #181825;
+                Text {
+                    text: root.message-count + " messages";
+                    font-size: 12px;
+                    color: #6c7086;
+                }
+            }
+        }
+
+        // Preview pane (native text; HTML opens in sandboxed viewport)
+        VerticalLayout {
+            min-width: 300px;
+            padding: 12px;
+            Text {
+                text: root.selected-subject;
+                font-size: 16px;
+                font-weight: 700;
+                color: #cdd6f4;
+            }
+            Text {
+                text: "From: " + root.selected-from;
+                font-size: 13px;
+                color: #a6adc8;
+            }
+            Rectangle { height: 1px; background: #45475a; }
+            Button {
+                text: "Open HTML view (sandboxed)";
+                clicked => { root.open-body-view(); }
+            }
+        }
+    }
+
+    // Status bar
+    Rectangle {
+        height: 24px;
+        background: #313244;
+        Text {
+            text: root.status-text + " │ " + root.connection-state;
+            font-size: 12px;
+            color: #a6adc8;
+            vertical-alignment: center;
+        }
+    }
+}
