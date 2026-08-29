@@ -52,6 +52,13 @@ pub async fn run(
     handle: EngineHandle,
     config: Arc<kestrel_core::config::Config>,
 ) -> std::io::Result<()> {
+    // Terminal requires a TTY (architecture §7: terminal restored on exit).
+    use std::io::IsTerminal as _;
+    if !std::io::stdout().is_terminal() {
+        return Err(std::io::Error::other(
+            "stdout is not a terminal; run kestrel-tui in a TTY (use a terminal emulator)",
+        ));
+    }
     let mut terminal = ratatui::init();
     let (tx, mut rx) = mpsc::channel::<TermEvent>(256);
 
