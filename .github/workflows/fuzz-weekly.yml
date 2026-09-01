@@ -1,0 +1,40 @@
+name: Weekly Fuzz
+on:
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Fuzz duration in seconds'
+        required: false
+        default: '600'
+jobs:
+  fuzz-deep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Deep fuzz all targets
+        working-directory: fuzz
+        run: |
+          DURATION=${{ github.event.inputs.duration || '600' }}
+          TARGETS=(fuzz_mime_adapter fuzz_link_classifier fuzz_html_sanitizer fuzz_terminal_sanitizer fuzz_imap_response)
+          FAIL=0
+          for target in "${TARGETS[@]}"; do
+            echo "::group::Deep fuzzing $target (${DURATION}s)"
+            if cargo fuzz run "$target" -- -max_total_time="$DURATION" -max_len=4096; then
+              echo "$target: PASS"
+            else
+              echo "::error::$target: CRASH"
+              FAIL=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$FAIL" -eq 1 ]; then echo "::error::Deep fuzz crashes."; exit 1; fi

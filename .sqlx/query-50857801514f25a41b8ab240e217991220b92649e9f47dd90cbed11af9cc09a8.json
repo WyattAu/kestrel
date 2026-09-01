@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, account_id, op_type, payload_json, created_at, retry_count, last_error\n             FROM pending_ops\n             WHERE account_id = ?1\n             ORDER BY created_at ASC, id ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "pending_ops",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_ops",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "op_type",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_ops",
+            "name": "op_type"
+          }
+        }
+      },
+      {
+        "name": "payload_json",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_ops",
+            "name": "payload_json"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "pending_ops",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "retry_count",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "pending_ops",
+            "name": "retry_count"
+          }
+        }
+      },
+      {
+        "name": "last_error",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pending_ops",
+            "name": "last_error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "50857801514f25a41b8ab240e217991220b92649e9f47dd90cbed11af9cc09a8"
+}

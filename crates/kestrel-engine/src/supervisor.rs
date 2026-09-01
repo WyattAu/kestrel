@@ -10,6 +10,7 @@ use kestrel_core::{
     protocol::{EngineEvent, ServiceId},
 };
 use tokio_util::sync::CancellationToken;
+use tracing::instrument;
 
 use crate::bus::EventBus;
 
@@ -90,6 +91,7 @@ impl Supervisor {
     /// cancellation token; a returned `Err` or a panic triggers backoff +
     /// `ServiceDegraded`. Clean `Ok(())` exits end supervision (service
     /// completed; no restart).
+    #[instrument(skip_all, fields(service = %service))]
     pub async fn supervise<F, Fut>(
         service: ServiceId,
         cfg: SupervisionConfig,

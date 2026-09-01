@@ -7,12 +7,14 @@
 
 pub mod error;
 pub mod jmap;
+pub mod jmap_sync;
 pub mod outbox_service;
 pub mod session;
 pub mod smtp;
 pub mod sync;
 
 pub use error::{SyncError, SyncResult};
+pub use jmap_sync::JmapSyncService;
 pub use outbox_service::OutboxService;
 pub use session::{CommandOutcome, ConnectParams, ImapSession, SaslFactory, Security, Unsolicited};
 pub use smtp::{SmtpParams, SmtpSecurity, submit_envelope};

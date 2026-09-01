@@ -3,6 +3,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, missing_docs))]
 
 pub mod app;
+pub mod autosave;
 pub mod editor;
 pub mod event;
 pub mod html;

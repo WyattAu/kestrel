@@ -7,6 +7,8 @@
 mod blobs_gc;
 mod messages;
 mod outbox;
+mod pending_ops;
+mod snooze;
 
 use std::sync::Arc;
 
@@ -43,6 +45,10 @@ use kestrel_core::{
 };
 pub(crate) use messages::StoreMessagesExt;
 pub(crate) use outbox::StoreOutboxExt;
+pub(crate) use pending_ops::StorePendingOpsExt;
+pub use pending_ops::{FlagPayload, OpType, PendingOp, PendingOpPayload};
+pub use snooze::SnoozeRow;
+pub(crate) use snooze::StoreSnoozeExt;
 
 use crate::{
     blob::BlobStore,
@@ -107,14 +113,15 @@ impl Store {
             None => AccountId::from_uuid(self.ids.next_id()),
         };
         sqlx::query!(
-            "INSERT INTO accounts (id, name, email, provider, protocol, auth_kind, sync_state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'disconnected', ?7, ?7)
+            "INSERT INTO accounts (id, name, email, provider, protocol, auth_kind, host, sync_state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'disconnected', ?8, ?8)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
                email = excluded.email,
                provider = excluded.provider,
                protocol = excluded.protocol,
                auth_kind = excluded.auth_kind,
+               host = excluded.host,
                updated_at = excluded.updated_at",
             id.to_string(),
             account.name,
@@ -122,6 +129,7 @@ impl Store {
             provider_wire(&account.provider),
             protocol_wire(account.protocol),
             account.auth_kind,
+            account.host,
             now
         )
         .execute(&self.db.data.write)
@@ -141,10 +149,11 @@ impl Store {
             provider: String,
             protocol: String,
             sync_state: String,
+            host: String,
         }
         let rows = sqlx::query_as!(
             AccountRow,
-            "SELECT id, name, email, provider, protocol, sync_state FROM accounts ORDER BY created_at"
+            "SELECT id, name, email, provider, protocol, sync_state, host FROM accounts ORDER BY created_at"
         )
         .fetch_all(&self.db.data.read)
         .await?;
@@ -157,6 +166,7 @@ impl Store {
                      provider,
                      protocol,
                      sync_state,
+                     host,
                  }| {
                     Ok(kestrel_core::protocol::AccountSummary {
                         id: parse_id::<AccountId>(&id)?,
@@ -165,6 +175,8 @@ impl Store {
                         provider: provider_parse(&provider),
                         protocol: protocol_parse(&protocol),
                         state: state_parse(&sync_state),
+                        host,
+                        color: None,
                     })
                 },
             )
@@ -381,6 +393,22 @@ pub(crate) fn provider_wire(p: &Provider) -> &'static str {
         Provider::Outlook => "outlook",
         Provider::Fastmail => "fastmail",
         Provider::Jmap => "jmap",
+        Provider::Yahoo => "yahoo",
+        Provider::Aol => "aol",
+        Provider::Icloud => "icloud",
+        Provider::Proton => "proton",
+        Provider::Zoho => "zoho",
+        Provider::Gmx => "gmx",
+        Provider::Webde => "webde",
+        Provider::Mailru => "mailru",
+        Provider::Yandex => "yandex",
+        Provider::Comcast => "comcast",
+        Provider::Att => "att",
+        Provider::Verizon => "verizon",
+        Provider::Tonline => "tonline",
+        Provider::Ionos => "ionos",
+        Provider::Rackspace => "rackspace",
+        Provider::Mailbox => "mailbox",
     }
 }
 
@@ -390,6 +418,22 @@ pub(crate) fn provider_parse(s: &str) -> Provider {
         "outlook" => Provider::Outlook,
         "fastmail" => Provider::Fastmail,
         "jmap" => Provider::Jmap,
+        "yahoo" => Provider::Yahoo,
+        "aol" => Provider::Aol,
+        "icloud" => Provider::Icloud,
+        "proton" => Provider::Proton,
+        "zoho" => Provider::Zoho,
+        "gmx" => Provider::Gmx,
+        "webde" => Provider::Webde,
+        "mailru" => Provider::Mailru,
+        "yandex" => Provider::Yandex,
+        "comcast" => Provider::Comcast,
+        "att" => Provider::Att,
+        "verizon" => Provider::Verizon,
+        "tonline" => Provider::Tonline,
+        "ionos" => Provider::Ionos,
+        "rackspace" => Provider::Rackspace,
+        "mailbox" => Provider::Mailbox,
         _ => Provider::Generic,
     }
 }
@@ -416,6 +460,7 @@ pub(crate) fn role_wire(r: FolderRole) -> &'static str {
         FolderRole::Trash => "trash",
         FolderRole::Archive => "archive",
         FolderRole::Junk => "junk",
+        FolderRole::UnifiedInbox => "unified_inbox",
     }
 }
 

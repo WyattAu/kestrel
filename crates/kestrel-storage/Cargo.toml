@@ -39,3 +39,11 @@ harness = false
 [[bench]]
 name = "search"
 harness = false
+
+[[bench]]
+name = "large_mailbox"
+harness = false
+
+[[bench]]
+name = "stress"
+harness = false

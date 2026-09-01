@@ -31,5 +31,20 @@ services:
       # port (default binds container-loopback only).
       GREENMAIL_OPTS: "-Dgreenmail.smtp.hostname=0.0.0.0 -Dgreenmail.smtp.port=25 -Dgreenmail.imap.hostname=0.0.0.0 -Dgreenmail.imap.port=143 -Dgreenmail.users=kestrel:testpass -Dgreenmail.auth.disabled"
 
+  radicale:
+    image: ghcr.io/kozea/radicale:stable
+    ports:
+      - "5232:5232"
+    volumes:
+      - ./radicale/config:/etc/radicale/config:ro
+      - ./radicale/users:/etc/radicale/users:ro
+      - radicale-data:/var/lib/radicale
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5232/')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   dovecot-mail:
+  radicale-data:

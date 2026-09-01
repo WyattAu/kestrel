@@ -11,6 +11,7 @@
 //!   MIME-type allowlisted, size ≤ 128 MiB, dropped on navigation
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
@@ -64,6 +65,12 @@ impl ViewportState {
         self.parts.clear();
     }
 
+    /// Returns parts for display (clones all parts).
+    #[must_use]
+    pub fn parts_for_display(&self) -> Vec<CidPart> {
+        self.parts.values().cloned().collect()
+    }
+
     /// Serves a `kestrel-cid://part/<id>` request.
     ///
     /// Returns `(mime, body)` on success; `None` when the part is absent,
@@ -96,12 +103,190 @@ impl ViewportState {
 #[must_use]
 pub fn wrap_html_with_csp(sanitized_html: &str) -> String {
     format!(
-        "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"Content-Security-Policy\" content=\"{REQUIRED_CSP}\">\n<style>body{{font-family:sans-serif;margin:0.5em;max-width:70em}}blockquote{{border-left:3px solid #999;margin:0.5em 0;padding-left:0.6em;color:#555}}pre{{background:#f4f4f4;padding:0.5em;overflow-x:auto}}img{{max-width:100%}}table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:0.3em 0.6em}}</style>\n</head>\n<body>\n{sanitized_html}\n</body>\n</html>"
+        r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark light">
+<meta http-equiv="Content-Security-Policy" content="{REQUIRED_CSP}">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0.5em; max-width: 70em; }}
+blockquote {{ border-left: 3px solid #585b70; margin: 0.5em 0; padding-left: 0.6em; color: #a6adc8; }}
+pre {{ background: #313244; padding: 0.5em; overflow-x: auto; color: #cdd6f4; }}
+code {{ background: #313244; padding: 0 0.2em; color: #a6e3a1; }}
+img {{ max-width: 100%; }}
+table {{ border-collapse: collapse; }}
+td, th {{ border: 1px solid #45475a; padding: 0.3em 0.6em; }}
+a {{ color: #89b4fa; }}
+hr {{ border: none; border-top: 1px solid #45475a; }}
+@media (prefers-color-scheme: light) {{
+    body {{ color: #1e1e2e; background: #eff1f5; }}
+    blockquote {{ color: #6c7086; border-left-color: #ccd0da; }}
+    pre {{ background: #e6e9ef; color: #1e1e2e; }}
+    code {{ background: #e6e9ef; color: #d20f39; }}
+    td, th {{ border-color: #ccd0da; }}
+    a {{ color: #1e66f5; }}
+    hr {{ border-top-color: #ccd0da; }}
+}}
+</style>
+</head>
+<body>
+{sanitized_html}
+</body>
+</html>"#
     )
 }
 
 /// Shared viewport state handle.
 pub type SharedViewportState = Arc<Mutex<ViewportState>>;
+
+/// Opens a sanitized HTML body in a new browser window.
+///
+/// Writes the CSP-wrapped HTML to a temp file and opens it via the
+/// system browser. The HTML is already ammonia-sanitized upstream; the
+/// CSP meta tag provides defense-in-depth.
+///
+/// # Errors
+/// Returns an error string if the temp file or browser launch fails.
+pub fn open_html_in_browser(html: &str) -> Result<(), String> {
+    let wrapped = wrap_html_with_csp(html);
+    let dir = std::env::temp_dir().join("kestrel-html");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
+    let path = dir.join(format!("{}.html", uuid::Uuid::now_v7()));
+    std::fs::write(&path, wrapped).map_err(|e| format!("write: {e}"))?;
+    open::that(&path).map_err(|e| format!("browser: {e}"))
+}
+
+/// Full `wry` `WebView` viewport with sandboxed rendering.
+///
+/// Creates a new winit window, builds a `wry` `WebView` on it with the
+/// `kestrel-cid://` custom protocol for inline images, loads the
+/// CSP-wrapped HTML, and runs the event loop until the window is closed.
+///
+/// # Errors
+/// Returns an error string if the window, webview, or event loop fails.
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::too_many_lines,
+    clippy::missing_panics_doc
+)]
+pub fn spawn_wry_viewport(html: &str, parts: Vec<CidPart>) -> Result<(), String> {
+    let wrapped = wrap_html_with_csp(html);
+    let state = Arc::new(Mutex::new(ViewportState::default()));
+    {
+        let mut s = state.lock().map_err(|e| format!("lock: {e}"))?;
+        s.load(parts);
+    }
+
+    let state_for_protocol = Arc::clone(&state);
+
+    std::thread::Builder::new()
+        .name("kestrel-viewport".into())
+        .spawn(move || {
+            use winit::{
+                application::ApplicationHandler, event::WindowEvent, event_loop::EventLoop,
+                window::Window,
+            };
+
+            struct ViewportApp {
+                window: Option<Window>,
+                webview: Option<wry::WebView>,
+                html: String,
+                state: SharedViewportState,
+            }
+
+            impl ApplicationHandler for ViewportApp {
+                fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                    if self.window.is_some() {
+                        return;
+                    }
+                    let attrs = Window::default_attributes()
+                        .with_title("Kestrel — Message View")
+                        .with_inner_size(winit::dpi::LogicalSize::new(900, 700));
+                    let Ok(window) = event_loop.create_window(attrs) else {
+                        return;
+                    };
+
+                    let state_clone = Arc::clone(&self.state);
+                    let html = self.html.clone();
+
+                    let empty: &'static [u8] = b"";
+                    let builder = wry::WebViewBuilder::new()
+                        .with_html(html)
+                        .with_custom_protocol("kestrel-cid".into(), move |_id, request| {
+                            let url = request.uri().to_string();
+                            let Ok(state) = state_clone.lock() else {
+                                return wry::http::Response::builder()
+                                    .status(500)
+                                    .body(Cow::Borrowed(empty))
+                                    .unwrap();
+                            };
+                            match state.serve(&url) {
+                                Some((mime, data)) => wry::http::Response::builder()
+                                    .header("Content-Type", &mime)
+                                    .body(Cow::Owned(data))
+                                    .unwrap_or_else(|_| {
+                                        wry::http::Response::builder()
+                                            .status(500)
+                                            .body(Cow::Borrowed(empty))
+                                            .unwrap()
+                                    }),
+                                None => wry::http::Response::builder()
+                                    .status(404)
+                                    .body(Cow::Borrowed(empty))
+                                    .unwrap(),
+                            }
+                        })
+                        .with_devtools(false)
+                        .with_javascript_disabled();
+
+                    match builder.build(&window) {
+                        Ok(webview) => {
+                            self.window = Some(window);
+                            self.webview = Some(webview);
+                        }
+                        Err(e) => {
+                            tracing::warn!("webview build failed: {e}");
+                            event_loop.exit();
+                        }
+                    }
+                }
+
+                fn window_event(
+                    &mut self,
+                    event_loop: &winit::event_loop::ActiveEventLoop,
+                    _window_id: winit::window::WindowId,
+                    event: WindowEvent,
+                ) {
+                    match event {
+                        WindowEvent::CloseRequested => {
+                            event_loop.exit();
+                        }
+                        WindowEvent::Resized(_size) => {
+                            // WebView auto-resizes with the parent window on most platforms.
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let event_loop = EventLoop::new().expect("failed to create event loop");
+            let mut app = ViewportApp {
+                window: None,
+                webview: None,
+                html: wrapped,
+                state: state_for_protocol,
+            };
+            if let Err(e) = event_loop.run_app(&mut app) {
+                tracing::warn!("viewport event loop: {e}");
+            }
+        })
+        .map_err(|e| format!("spawn: {e}"))?;
+    // Don't join the thread — the viewport runs independently.
+    // The thread will exit when the user closes the viewport window.
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -124,6 +309,8 @@ mod tests {
         assert!(html.contains("default-src 'none'"));
         assert!(html.contains("script-src 'none'"));
         assert!(html.contains("<p>hello</p>"));
+        assert!(html.contains("prefers-color-scheme"));
+        assert!(html.contains("color-scheme"));
     }
 
     #[test]

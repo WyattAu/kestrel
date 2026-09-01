@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head><title>Phishing Links</title></head>
+<body>
+<a href="http://paypa1.com">PayPal</a>
+<a href="https://secure-paypal.com.evil.com">PayPal Login</a>
+<a href="http://xn--pple-43d.com">Apple (punycode)</a>
+<a href="https://google.com@evil.com">Google</a>
+<a href="http://google.com%40evil.com">Encoded @</a>
+<a href="data:text/html,<script>alert('xss')</script>">data URI</a>
+<a href="vbscript:MsgBox('xss')">VBScript</a>
+<a href="livescript:alert('xss')">LiveScript</a>
+<a href="http://legit.com" onclick="steal()">looks safe but isn't</a>
+<a href="&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;">HTML entity obfuscated</a>
+<a href="java&#x73;cript:alert(1)">hex entity obfuscated</a>
+<a href="&#0000106&#0000097&#0000118&#0000097&#0000115&#0000099&#0000114&#0000105&#0000112&#0000116&#0000058&#0000097&#0000108&#0000101&#0000114&#0000116&#0000040&#0000049&#0000041">zero-padded entities</a>
+</body>
+</html>

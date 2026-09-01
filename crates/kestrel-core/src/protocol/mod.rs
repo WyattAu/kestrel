@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Protocol major version, emitted in `EngineStarted`.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Which frontend originated a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +24,8 @@ pub enum FrontendKind {
     Tui,
     /// The desktop GUI.
     Gui,
+    /// The mobile client.
+    Mobile,
 }
 
 /// Command envelope (`docs/message-protocol.md` §2).
@@ -74,6 +76,15 @@ pub enum CommandPayload {
         message: MessageId,
         /// Body preference for lazy fetch.
         body: BodyPreference,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// List messages from all inbox folders across accounts (unified inbox).
+    ListUnifiedInbox {
+        /// Window into the sorted result.
+        window: Window,
+        /// Sort specification.
+        sort: SortSpec,
         /// Reply channel.
         reply: oneshot::Sender<Reply>,
     },
@@ -130,6 +141,96 @@ pub enum CommandPayload {
         reply: oneshot::Sender<Reply>,
     },
 
+    // ---- snooze -------------------------------------------------------------
+    /// Snooze a message until a specified time.
+    SnoozeMessage {
+        /// Message to snooze.
+        message: MessageId,
+        /// Account that owns the message.
+        account: AccountId,
+        /// Folder containing the message.
+        folder: FolderId,
+        /// Unix ms timestamp when the snooze expires.
+        until: i64,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// Remove a snooze from a message (unsnooze).
+    UnsnoozeMessage {
+        /// Message to unsnooze.
+        message: MessageId,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+
+    // ---- calendar / contacts (CalDAV / CardDAV) ----------------------------
+    /// List calendars for an account.
+    ListCalendars {
+        /// Account whose calendars to list.
+        account: AccountId,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// List events in a calendar within a time window.
+    ListEvents {
+        /// Calendar to list events from.
+        calendar: String,
+        /// Time window.
+        window: Window,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// Create a calendar event via `CalDAV`.
+    CreateEvent {
+        /// Calendar to create the event in.
+        calendar_id: String,
+        /// Event UID.
+        uid: String,
+        /// Event summary (title).
+        summary: String,
+        /// Event description.
+        description: Option<String>,
+        /// Event location.
+        location: Option<String>,
+        /// Start time as unix milliseconds.
+        start_time: i64,
+        /// End time as unix milliseconds.
+        end_time: i64,
+        /// Whether this is an all-day event.
+        all_day: bool,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// List contacts for an account.
+    ListContacts {
+        /// Account whose contacts to list.
+        account: AccountId,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+
+    // ---- attachments --------------------------------------------------------
+    /// Fetch decoded attachment bytes for a specific MIME part.
+    GetAttachment {
+        /// Message containing the part.
+        message: MessageId,
+        /// Part to fetch.
+        part: PartIdView,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// Save an attachment to a file path.
+    SaveAttachment {
+        /// Message containing the part.
+        message: MessageId,
+        /// Part to save.
+        part: PartIdView,
+        /// Destination file path.
+        path: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+
     // ---- sync control -------------------------------------------------------
     /// Trigger a sync (fire-and-forget).
     TriggerSync {
@@ -168,10 +269,28 @@ pub enum CommandPayload {
         /// Reply channel.
         reply: oneshot::Sender<Reply>,
     },
+    /// Start an `OAuth2` browser flow for the given provider.
+    /// Returns the authorization URL; the engine listens on loopback for the
+    /// callback and exchanges the code for tokens.
+    StartOAuth2Flow {
+        /// Provider to authenticate with.
+        provider: Provider,
+        /// Reply channel (receives the authorization URL).
+        reply: oneshot::Sender<Reply>,
+    },
     /// Remove an account and all its local data.
     RemoveAccount {
         /// Account to remove.
         account: AccountId,
+        /// Reply channel.
+        reply: oneshot::Sender<Reply>,
+    },
+    /// Update an existing account's configuration and re-sync.
+    UpdateAccount {
+        /// Full server configuration (upserted by email).
+        config: crate::provider::AccountConfig,
+        /// Password (for "password" auth kind); zeroized after storage.
+        password: crate::secrets::SecretString,
         /// Reply channel.
         reply: oneshot::Sender<Reply>,
     },
@@ -201,8 +320,18 @@ pub enum Reply {
     Message(MessageView),
     /// Search hits.
     SearchResults(Vec<SearchHit>),
+    /// Decoded attachment bytes.
+    AttachmentData(Vec<u8>),
+    /// Calendar list.
+    Calendars(Vec<CalendarSummary>),
+    /// Event list.
+    Events(Vec<EventSummary>),
+    /// Contact list.
+    Contacts(Vec<ContactSummary>),
     /// Queued/applied; follow-up events will follow.
     Accepted,
+    /// Authorization URL for an `OAuth2` browser flow.
+    OAuthUrl(String),
     /// Typed failure (ADR 0007 taxonomy payload).
     Err(KestrelError),
 }
@@ -289,6 +418,15 @@ pub enum EngineEvent {
     OutboxEnqueued {
         /// Outbox entry.
         id: OutboxId,
+    },
+    /// A snooze has expired; the frontend should re-show the message.
+    SnoozeExpired {
+        /// Message that was snoozed.
+        message: MessageId,
+        /// Account that owns the message.
+        account: AccountId,
+        /// Folder containing the message.
+        folder: FolderId,
     },
     /// A send attempt failed; retry scheduled.
     OutboxRetry {
@@ -392,6 +530,8 @@ pub enum ServiceId {
     Config,
     /// Per-account sync service.
     Sync(AccountId),
+    /// Filter rule evaluation service.
+    Filter,
 }
 
 impl std::fmt::Display for ServiceId {
@@ -404,6 +544,7 @@ impl std::fmt::Display for ServiceId {
             Self::Credentials => write!(f, "credentials"),
             Self::Config => write!(f, "config"),
             Self::Sync(a) => write!(f, "sync/{a}"),
+            Self::Filter => write!(f, "filter"),
         }
     }
 }
@@ -501,9 +642,13 @@ pub struct SearchQuery {
     /// Restrict to an account.
     pub account: Option<AccountId>,
     /// Only messages with attachments.
+    #[serde(default)]
     pub has_attachment: bool,
     /// Maximum hits returned.
     pub limit: Option<u64>,
+    /// When true, all text terms use fuzzy (Levenshtein) matching.
+    #[serde(default)]
+    pub fuzzy: bool,
 }
 
 impl SearchQuery {
@@ -520,7 +665,8 @@ impl SearchQuery {
                 && self.until.is_none()
                 && self.folder.is_none()
                 && self.account.is_none()
-                && !self.has_attachment)
+                && !self.has_attachment
+                && !self.fuzzy)
     }
 }
 
@@ -597,6 +743,11 @@ pub struct AccountSummary {
     pub protocol: MailProtocol,
     /// Current connection state.
     pub state: ConnectionState,
+    /// IMAP/JMAP host.
+    pub host: String,
+    /// UI accent color (hex, e.g. "#f38ba8").
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 /// Provider preset families (requirements §2.3).
@@ -613,6 +764,38 @@ pub enum Provider {
     Fastmail,
     /// JMAP-native provider.
     Jmap,
+    /// Yahoo Mail.
+    Yahoo,
+    /// AOL Mail.
+    Aol,
+    /// Apple iCloud.
+    Icloud,
+    /// Proton Mail (via Bridge).
+    Proton,
+    /// Zoho Mail.
+    Zoho,
+    /// GMX Mail.
+    Gmx,
+    /// Web.de.
+    Webde,
+    /// Mail.ru.
+    Mailru,
+    /// Yandex Mail.
+    Yandex,
+    /// Comcast Xfinity Mail.
+    Comcast,
+    /// AT&T Mail.
+    Att,
+    /// Verizon Mail.
+    Verizon,
+    /// T-Online.
+    Tonline,
+    /// IONOS / 1&1.
+    Ionos,
+    /// Rackspace Mail.
+    Rackspace,
+    /// mailbox.org.
+    Mailbox,
 }
 
 /// Mail protocol of an account.
@@ -660,6 +843,8 @@ pub enum FolderRole {
     Archive,
     /// Junk/spam.
     Junk,
+    /// Virtual folder aggregating all inbox folders across accounts.
+    UnifiedInbox,
 }
 
 /// One page of messages plus the total result count.
@@ -791,7 +976,8 @@ pub enum SuspiciousLinkReason {
 }
 
 /// A composition draft submitted to the outbox.
-#[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Draft {
     /// Sending account.
     pub account: AccountId,
@@ -814,10 +1000,51 @@ pub struct Draft {
     pub body_markdown: String,
     /// Attachments.
     pub attachments: Vec<DraftAttachment>,
+    /// Sign the message with `OpenPGP` before sending.
+    #[serde(default)]
+    pub pgp_sign: bool,
+    /// Encrypt the message with `OpenPGP` before sending.
+    #[serde(default)]
+    pub pgp_encrypt: bool,
+    /// Sign the message with `S/MIME` (CMS) before sending.
+    #[serde(default)]
+    pub smime_sign: bool,
+    /// Encrypt the message with `S/MIME` (CMS) before sending.
+    #[serde(default)]
+    pub smime_encrypt: bool,
+    /// Optional scheduled send time (unix ms). `None` = send immediately.
+    #[serde(default)]
+    pub send_after: Option<i64>,
+    /// Message priority/importance.
+    #[serde(default)]
+    pub priority: Priority,
+}
+
+/// Message priority/importance level.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    /// Highest priority.
+    High,
+    /// Normal priority (default).
+    #[default]
+    Normal,
+    /// Low priority.
+    Low,
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::High => write!(f, "high"),
+            Self::Normal => write!(f, "normal"),
+            Self::Low => write!(f, "low"),
+        }
+    }
 }
 
 /// An attachment on a draft.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DraftAttachment {
     /// File name.
     pub name: String,
@@ -825,6 +1052,43 @@ pub struct DraftAttachment {
     pub mime_type: String,
     /// Raw bytes.
     pub data: Vec<u8>,
+}
+
+/// Calendar summary for listings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalendarSummary {
+    /// Calendar id.
+    pub id: String,
+    /// Display name.
+    pub display_name: String,
+    /// Number of events in this calendar.
+    pub event_count: u64,
+}
+
+/// Event summary for calendar views.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventSummary {
+    /// Event id.
+    pub id: String,
+    /// Event title.
+    pub summary: String,
+    /// Start time as unix milliseconds.
+    pub start_time: i64,
+    /// End time as unix milliseconds.
+    pub end_time: i64,
+    /// Whether this is an all-day event.
+    pub all_day: bool,
+}
+
+/// Contact summary for contact listings and autocomplete.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactSummary {
+    /// Contact id.
+    pub id: String,
+    /// Display name.
+    pub display_name: String,
+    /// Primary email address.
+    pub email: String,
 }
 
 /// Folder delta delivered with `MailArrived`.
@@ -864,8 +1128,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protocol_version_is_one() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+    fn protocol_version_is_two() {
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 
     #[test]
@@ -885,5 +1149,76 @@ mod tests {
             }
             .is_empty()
         );
+    }
+
+    #[test]
+    fn folder_role_unified_inbox_serializes() {
+        let role = FolderRole::UnifiedInbox;
+        let json = serde_json::to_string(&role).unwrap();
+        assert_eq!(json, "\"unifiedinbox\"");
+        let deserialized: FolderRole = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, FolderRole::UnifiedInbox);
+    }
+
+    #[test]
+    fn calendar_summary_serializes() {
+        let s = CalendarSummary {
+            id: "cal-1".into(),
+            display_name: "Work".into(),
+            event_count: 42,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: CalendarSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn event_summary_serializes() {
+        let s = EventSummary {
+            id: "evt-1".into(),
+            summary: "Standup".into(),
+            start_time: 1_700_000_000_000,
+            end_time: 1_700_003_600_000,
+            all_day: false,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: EventSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn contact_summary_serializes() {
+        let s = ContactSummary {
+            id: "c-1".into(),
+            display_name: "Jane Doe".into(),
+            email: "jane@example.com".into(),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: ContactSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn priority_serializes() {
+        let high = Priority::High;
+        let json = serde_json::to_string(&high).unwrap();
+        assert_eq!(json, "\"high\"");
+        let back: Priority = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Priority::High);
+
+        let normal = Priority::Normal;
+        let json = serde_json::to_string(&normal).unwrap();
+        assert_eq!(json, "\"normal\"");
+
+        let low = Priority::Low;
+        let json = serde_json::to_string(&low).unwrap();
+        assert_eq!(json, "\"low\"");
+    }
+
+    #[test]
+    fn priority_display() {
+        assert_eq!(Priority::High.to_string(), "high");
+        assert_eq!(Priority::Normal.to_string(), "normal");
+        assert_eq!(Priority::Low.to_string(), "low");
     }
 }

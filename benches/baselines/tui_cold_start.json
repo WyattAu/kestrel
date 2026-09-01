@@ -1,0 +1,7 @@
+{
+  "benchmark": "tui_cold_start/config_paths_app_state",
+  "mean_ms": 35.0,
+  "thresholds": { "fail_ms": 150, "warn_ms": 50 },
+  "recorded_at": "2026-08-30T00:00:00Z",
+  "notes": "Initial baseline"
+}

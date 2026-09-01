@@ -1,0 +1,111 @@
+name: SBOM
+
+on:
+  release:
+    types: [created]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-auditable
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-auditable
+
+      - name: Generate SBOM via cargo audit
+        run: cargo audit --json > sbom-audit.json 2>/dev/null || true
+
+      - name: Generate auditable binary metadata
+        run: |
+          # cargo-auditable embeds dependency info in binaries at build time.
+          # For a full SBOM, we dump the workspace dependency tree.
+          cargo metadata --format-version 1 > sbom-metadata.json
+
+      - name: Build SBOM manifest
+        run: |
+          cat > kestrel-sbom.json << 'EOFSBOM'
+          {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "version": 1,
+            "metadata": {
+              "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "tools": [
+                { "vendor": "cargo-auditable", "name": "cargo-auditable", "version": "latest" },
+                { "vendor": "cargo-audit", "name": "cargo-audit", "version": "latest" }
+              ],
+              "component": {
+                "type": "application",
+                "name": "kestrel",
+                "version": "${{ github.ref_name }}",
+                "description": "Modular, offline-first email client"
+              }
+            },
+            "components": [],
+            "dependencies": []
+          }
+          EOFSBOM
+
+      - name: Enrich SBOM with dependency tree
+        run: |
+          # Parse cargo metadata into CycloneDX-style components
+          python3 -c "
+          import json, sys
+
+          with open('sbom-metadata.json') as f:
+              meta = json.load(f)
+
+          components = []
+          seen = set()
+          for pkg in meta.get('packages', []):
+              name = pkg['name']
+              version = pkg['version']
+              key = f\"{name}@{version}\"
+              if key in seen or pkg.get('source') is None:
+                  continue
+              seen.add(key)
+              components.append({
+                  'type': 'library',
+                  'name': name,
+                  'version': version,
+                  'purl': f\"pkg:cargo/{name}@{version}\"
+              })
+
+          sbom = {
+              'bomFormat': 'CycloneDX',
+              'specVersion': '1.4',
+              'version': 1,
+              'metadata': {
+                  'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+                  'tools': [
+                      {'vendor': 'kestrel-ci', 'name': 'sbom-generator', 'version': '1.0'}
+                  ],
+                  'component': {
+                      'type': 'application',
+                      'name': 'kestrel',
+                      'version': '${{ github.ref_name }}',
+                      'description': 'Modular, offline-first email client'
+                  }
+              },
+              'components': components
+          }
+
+          with open('kestrel-sbom.json', 'w') as f:
+              json.dump(sbom, f, indent=2)
+          "
+
+      - name: Upload SBOM to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: kestrel-sbom.json
+          fail_on_unmatched_files: false

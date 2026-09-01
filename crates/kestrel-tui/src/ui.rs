@@ -67,18 +67,26 @@ fn draw_folder_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
     let focused = state.focus == Focus::Folders;
     let mut items: Vec<ListItem<'_>> = Vec::new();
 
-    for acc in &state.accounts {
+    for (i, acc) in state.accounts.iter().enumerate() {
+        let color = acc
+            .color
+            .as_deref()
+            .and_then(parse_hex_color)
+            .unwrap_or(match acc.state {
+                kestrel_core::protocol::ConnectionState::Idle
+                | kestrel_core::protocol::ConnectionState::Syncing => Color::Green,
+                kestrel_core::protocol::ConnectionState::OfflineMode => Color::Yellow,
+                _ => Color::Gray,
+            });
+        let indicator = if i == state.selected_account {
+            Span::styled(" ◀", Style::default().fg(color))
+        } else {
+            Span::raw(String::new())
+        };
         items.push(ListItem::new(Line::from(vec![
-            Span::styled(
-                "◆ ",
-                Style::default().fg(match acc.state {
-                    kestrel_core::protocol::ConnectionState::Idle
-                    | kestrel_core::protocol::ConnectionState::Syncing => Color::Green,
-                    kestrel_core::protocol::ConnectionState::OfflineMode => Color::Yellow,
-                    _ => Color::Gray,
-                }),
-            ),
+            Span::styled("● ", Style::default().fg(color)),
             Span::raw(acc.name.clone()),
+            indicator,
         ])));
         if items.len() > state.selected_account + 1 {
             for folder in &state.folders {
@@ -88,7 +96,10 @@ fn draw_folder_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
                     String::new()
                 };
                 let role_icon = match folder.role {
-                    Some(kestrel_core::protocol::FolderRole::Inbox) => "📥",
+                    Some(
+                        kestrel_core::protocol::FolderRole::Inbox
+                        | kestrel_core::protocol::FolderRole::UnifiedInbox,
+                    ) => "📥",
                     Some(kestrel_core::protocol::FolderRole::Sent) => "📤",
                     Some(kestrel_core::protocol::FolderRole::Drafts) => "📝",
                     Some(kestrel_core::protocol::FolderRole::Trash) => "🗑",
@@ -126,41 +137,50 @@ fn draw_folder_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
 
 fn draw_list_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
     let focused = state.focus == Focus::List;
-    let items: Vec<ListItem<'_>> = state
-        .page
-        .items
-        .iter()
-        .map(|m| {
-            let flags = if m.is_read { " " } else { "●" };
-            let attach = if m.has_attachments { "📎" } else { " " };
-            let from = m
-                .from
-                .first()
-                .map(|a| a.name.clone().unwrap_or_else(|| a.email.clone()))
-                .unwrap_or_default();
-            let subject = m.subject.clone().unwrap_or_else(|| "(no subject)".into());
-            let date = format_date(m.internal_date);
-            Line::from(vec![
-                Span::styled(flags.to_string(), Style::default().fg(Color::Yellow)),
-                Span::raw(" "),
-                Span::styled(attach.to_string(), Style::default()),
-                Span::raw(" "),
-                Span::styled(format!("{from:<20}"), Style::default().fg(Color::Blue)),
-                Span::raw(" "),
-                Span::styled(
-                    format!("{subject:<40}"),
-                    if m.is_read {
-                        Style::default()
-                    } else {
-                        Style::default().add_modifier(Modifier::BOLD)
-                    },
-                ),
-                Span::raw(" "),
-                Span::styled(date, Style::default().fg(Color::DarkGray)),
-            ])
-        })
-        .map(ListItem::new)
-        .collect();
+    let mut items: Vec<ListItem<'_>> = Vec::new();
+    let mut last_group: Option<&str> = None;
+    for m in &state.page.items {
+        // Insert date group header when the group changes.
+        if let Some(group) = kestrel_core::time::date_group(m.internal_date)
+            && last_group != Some(group)
+        {
+            last_group = Some(group);
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("  ── {group} ──"),
+                Style::default().fg(Color::DarkGray),
+            ))));
+        }
+        let flags = if m.is_read { " " } else { "●" };
+        let star = if m.is_flagged { "★" } else { " " };
+        let attach = if m.has_attachments { "📎" } else { " " };
+        let from = m
+            .from
+            .first()
+            .map(|a| a.name.clone().unwrap_or_else(|| a.email.clone()))
+            .unwrap_or_default();
+        let subject = m.subject.clone().unwrap_or_else(|| "(no subject)".into());
+        let date = format_date(m.internal_date);
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(flags.to_string(), Style::default().fg(Color::Yellow)),
+            Span::raw(" "),
+            Span::styled(star.to_string(), Style::default().fg(Color::Yellow)),
+            Span::raw(" "),
+            Span::styled(attach.to_string(), Style::default()),
+            Span::raw(" "),
+            Span::styled(format!("{from:<20}"), Style::default().fg(Color::Blue)),
+            Span::raw(" "),
+            Span::styled(
+                format!("{subject:<40}"),
+                if m.is_read {
+                    Style::default()
+                } else {
+                    Style::default().add_modifier(Modifier::BOLD)
+                },
+            ),
+            Span::raw(" "),
+            Span::styled(date, Style::default().fg(Color::DarkGray)),
+        ])));
+    }
 
     let total = state.page.total;
     let shown = state.page.items.len();
@@ -225,17 +245,32 @@ fn draw_preview_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
             rendered
                 .iter()
                 .map(|rl| {
-                    if rl.links.is_empty() {
-                        Line::from(rl.text.clone())
+                    let base_style = if rl.is_quoted {
+                        Style::default().fg(Color::DarkGray)
                     } else {
-                        // OSC 8 hyperlinks inline.
-                        let mut text = rl.text.clone();
-                        for (start, end, url) in rl.links.iter().rev() {
-                            let label = text[*start..*end].to_string();
-                            let linked = osc8_link(url, &label);
-                            text.replace_range(start..end, &linked);
+                        Style::default()
+                    };
+                    if rl.links.is_empty() {
+                        Line::from(Span::styled(rl.text.clone(), base_style))
+                    } else {
+                        // OSC 8 hyperlinks inline with dim styling for quotes.
+                        let mut spans: Vec<Span<'_>> = Vec::new();
+                        let mut last_end = 0usize;
+                        for (start, end, url) in &rl.links {
+                            if *start > last_end {
+                                spans.push(Span::styled(
+                                    rl.text[last_end..*start].to_string(),
+                                    base_style,
+                                ));
+                            }
+                            let label = rl.text[*start..*end].to_string();
+                            spans.push(Span::styled(osc8_link(url, &label), base_style));
+                            last_end = *end;
                         }
-                        Line::from(text)
+                        if last_end < rl.text.len() {
+                            spans.push(Span::styled(rl.text[last_end..].to_string(), base_style));
+                        }
+                        Line::from(spans)
                     }
                 })
                 .collect::<Vec<_>>()
@@ -282,10 +317,14 @@ fn draw_mode_line(f: &mut Frame<'_>, state: &AppState, area: Rect) {
     let text = match state.mode {
         Mode::Setup => " Tab:next field │ Enter:connect │ Esc:cancel ",
         Mode::Normal => {
-            " j/k:navigate │ Tab:focus │ d:delete │ r:reply │ a:reply-all │ f:forward │ /:search │ c:compose │ q:quit "
+            " j/k:navigate │ Tab:focus │ d:delete │ s:star │ z:snooze │ /:search │ :command │ r:reply │ a:reply-all │ f:forward │ c:compose │ q:quit "
         }
         Mode::Search => " type query │ Enter:search │ Esc:cancel ",
         Mode::Confirm => " y:confirm │ n/Esc:cancel ",
+        Mode::ConfirmDelete => " y:delete │ n/Esc:cancel ",
+        Mode::ConfirmRemoveAccount => " y:remove account │ n/Esc:cancel ",
+        Mode::Snooze => " j/k:select │ Enter:confirm │ Esc:cancel ",
+        Mode::Command => " type command │ Enter:execute │ Esc:cancel ",
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -379,6 +418,39 @@ pub fn draw_modal(f: &mut Frame<'_>, state: &AppState) {
             );
         }
         Mode::Normal => {}
+        Mode::ConfirmDelete => {
+            let area = centered_rect(f.area(), 50, 3);
+            f.render_widget(Clear, area);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    &state.status,
+                    Style::default().fg(Color::Yellow),
+                )))
+                .block(Block::default().borders(Borders::ALL)),
+                area,
+            );
+        }
+        Mode::ConfirmRemoveAccount => draw_confirm_remove_account_modal(f, state),
+        Mode::Snooze => draw_snooze_modal(f, state),
+        Mode::Command => {
+            let area = centered_rect(f.area(), 60, 3);
+            f.render_widget(Clear, area);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(":", Style::default().fg(Color::Cyan)),
+                    Span::raw(
+                        state
+                            .command_input
+                            .strip_prefix(':')
+                            .unwrap_or(&state.command_input)
+                            .to_owned(),
+                    ),
+                    Span::styled("_", Style::default().fg(Color::DarkGray)),
+                ]))
+                .block(Block::default().borders(Borders::ALL).title(" Command ")),
+                area,
+            );
+        }
     }
 }
 
@@ -399,4 +471,77 @@ fn centered_rect(area: Rect, pct_width: u16, height: u16) -> Rect {
             Constraint::Percentage((100 - pct_width) / 2),
         ])
         .split(popup[1])[1]
+}
+
+/// Renders the snooze options modal overlay.
+fn draw_snooze_modal(f: &mut Frame<'_>, state: &AppState) {
+    let area = centered_rect(f.area(), 50, 8);
+    f.render_widget(Clear, area);
+
+    let options = [
+        "Tomorrow morning (9 AM)",
+        "Next week",
+        &format!("Custom ({} hours)_", state.snooze_hours),
+    ];
+
+    let mut lines: Vec<Line<'_>> = vec![Line::from(Span::styled(
+        "  Snooze message  ",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ))];
+
+    for (i, opt) in options.iter().enumerate() {
+        let selected = i == state.snooze_selection;
+        let prefix = if selected { "▶ " } else { "  " };
+        let style = if selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(prefix.to_string(), style),
+            Span::styled(opt.to_string(), style),
+        ]));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "  j/k:select │ Enter:confirm │ Esc:cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
+        area,
+    );
+}
+
+fn draw_confirm_remove_account_modal(f: &mut Frame<'_>, state: &AppState) {
+    let area = centered_rect(f.area(), 60, 3);
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            &state.status,
+            Style::default().fg(Color::Red),
+        )))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Confirm Account Removal "),
+        ),
+        area,
+    );
+}
+
+fn parse_hex_color(hex: &str) -> Option<Color> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::Rgb(r, g, b))
 }

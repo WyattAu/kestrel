@@ -5,7 +5,7 @@
 //! Layered keys: `KESTREL_<SECTION>__<KEY>` environment overrides
 //! (double underscore separates nesting), used mainly by tests and CI.
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 
 use figment::{
     Figment,
@@ -16,6 +16,91 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::paths::Paths;
+
+/// A saved search: name + structured query for reuse.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedSearch {
+    /// User-chosen label.
+    pub name: String,
+    /// Structured search query to execute.
+    pub query: crate::protocol::SearchQuery,
+}
+
+/// Per-account notification settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AccountNotificationConfig {
+    /// Whether notifications are enabled for this account.
+    pub enabled: bool,
+    /// Whether to include the subject line in OS notifications.
+    pub show_subject: bool,
+    /// Optional custom notification sound.
+    pub sound: Option<String>,
+    /// Whether this account is muted (suppresses all notifications).
+    pub mute: bool,
+}
+
+impl Default for AccountNotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            show_subject: true,
+            sound: None,
+            mute: false,
+        }
+    }
+}
+
+/// Configurable keybindings for the TUI.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KeybindingsConfig {
+    /// Reply to sender.
+    pub reply: String,
+    /// Reply to all recipients.
+    pub reply_all: String,
+    /// Forward message.
+    pub forward: String,
+    /// Delete message.
+    pub delete: String,
+    /// Archive message.
+    pub archive: String,
+    /// Toggle flagged/starred.
+    pub flag: String,
+    /// Compose new message.
+    pub compose: String,
+    /// Open search.
+    pub search: String,
+    /// Next message (vi-down).
+    pub next: String,
+    /// Previous message (vi-up).
+    pub prev: String,
+}
+
+impl Default for KeybindingsConfig {
+    fn default() -> Self {
+        Self {
+            reply: "r".into(),
+            reply_all: "a".into(),
+            forward: "f".into(),
+            delete: "d".into(),
+            archive: "x".into(),
+            flag: "s".into(),
+            compose: "c".into(),
+            search: "/".into(),
+            next: "j".into(),
+            prev: "k".into(),
+        }
+    }
+}
+
+impl KeybindingsConfig {
+    /// Returns the first `char` of a keybinding string, or `None` if empty.
+    #[must_use]
+    pub fn key_char(binding: &str) -> Option<char> {
+        binding.chars().next()
+    }
+}
 
 /// Root configuration model. UI preferences (keybindings, theme) live in the
 /// same file; engine-level state does not (that is `data.db settings`).
@@ -32,12 +117,26 @@ pub struct Config {
     pub search: SearchConfig,
     /// Notification policy (threat model §6: privacy).
     pub notifications: NotificationsConfig,
+    /// Per-account notification overrides (email → config).
+    pub account_notifications: HashMap<String, AccountNotificationConfig>,
     /// Security policy.
     pub security: SecurityConfig,
     /// External editor for TUI composition (`$EDITOR` when absent).
     pub editor: EditorConfig,
     /// Logging (ADR 0008).
     pub log: LogConfig,
+    /// User-defined compose templates (name → body content).
+    pub templates: HashMap<String, String>,
+    /// User-saved searches for quick reuse.
+    pub saved_searches: Vec<SavedSearch>,
+    /// Per-account email signatures (keyed by email address).
+    pub account_signatures: HashMap<String, String>,
+    /// Undo-send delay in seconds (0 = immediate send). When > 0, the
+    /// outbox entry is enqueued with a delayed `next_attempt_at` so the
+    /// user can cancel within the window.
+    pub send_delay_seconds: u32,
+    /// Configurable keybindings for the TUI and GUI.
+    pub keybindings: KeybindingsConfig,
 }
 
 // clippy::derivable_impls: intentional — adding a section without a
@@ -45,15 +144,23 @@ pub struct Config {
 #[allow(clippy::derivable_impls)]
 impl Default for Config {
     fn default() -> Self {
+        let mut templates = HashMap::new();
+        templates.insert("signature".into(), "-- \nBest regards,\nYour Name".into());
         Self {
             general: GeneralConfig::default(),
             sync: SyncConfig::default(),
             storage: StorageConfig::default(),
             search: SearchConfig::default(),
             notifications: NotificationsConfig::default(),
+            account_notifications: HashMap::new(),
             security: SecurityConfig::default(),
             editor: EditorConfig::default(),
             log: LogConfig::default(),
+            templates,
+            saved_searches: Vec::new(),
+            account_signatures: HashMap::new(),
+            send_delay_seconds: 0,
+            keybindings: KeybindingsConfig::default(),
         }
     }
 }
@@ -503,5 +610,44 @@ mod tests {
         write_default_if_missing(&file, &Config::default()).unwrap();
         write_default_if_missing(&file, &Config::default()).unwrap();
         assert!(file.exists());
+    }
+
+    #[test]
+    fn keybindings_defaults() {
+        let kb = KeybindingsConfig::default();
+        assert_eq!(kb.reply, "r");
+        assert_eq!(kb.reply_all, "a");
+        assert_eq!(kb.forward, "f");
+        assert_eq!(kb.delete, "d");
+        assert_eq!(kb.archive, "x");
+        assert_eq!(kb.flag, "s");
+        assert_eq!(kb.compose, "c");
+        assert_eq!(kb.search, "/");
+        assert_eq!(kb.next, "j");
+        assert_eq!(kb.prev, "k");
+    }
+
+    #[test]
+    fn keybindings_key_char() {
+        assert_eq!(KeybindingsConfig::key_char("r"), Some('r'));
+        assert_eq!(KeybindingsConfig::key_char("/"), Some('/'));
+        assert_eq!(KeybindingsConfig::key_char(""), None);
+    }
+
+    #[test]
+    fn keybindings_load_from_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        paths.ensure().unwrap();
+        std::fs::write(
+            paths.config_file(),
+            "[keybindings]\nreply = \"u\"\nforward = \"w\"\n",
+        )
+        .unwrap();
+        let loaded = Config::load(&paths).unwrap();
+        assert_eq!(loaded.config.keybindings.reply, "u");
+        assert_eq!(loaded.config.keybindings.forward, "w");
+        // Defaults preserved for unspecified keys.
+        assert_eq!(loaded.config.keybindings.delete, "d");
     }
 }

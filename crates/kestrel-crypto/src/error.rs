@@ -24,6 +24,9 @@ pub enum CryptoError {
     /// `OpenPGP` operation failure.
     #[error("openpgp: {0}")]
     OpenPgp(String),
+    /// `S/MIME` operation failure.
+    #[error("S/MIME: {0}")]
+    Smime(String),
     /// Unexpected internal state (Bug).
     #[error("bug: {0}")]
     Bug(String),
@@ -37,6 +40,7 @@ impl From<CryptoError> for KestrelError {
             CryptoError::KeyringUnavailable(detail) => Self::KeyringUnavailable { detail },
             CryptoError::Tls(detail) => Self::TlsHandshake { detail },
             CryptoError::OpenPgp(detail) => Self::OpenPgpFailed { detail },
+            CryptoError::Smime(detail) => Self::SmimeFailed { detail },
             CryptoError::Bug(detail) => Self::Bug { detail },
         }
     }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO accounts (id, name, email, provider, protocol, auth_kind, host, sync_state, created_at, updated_at)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'disconnected', ?8, ?8)\n             ON CONFLICT(id) DO UPDATE SET\n               name = excluded.name,\n               email = excluded.email,\n               provider = excluded.provider,\n               protocol = excluded.protocol,\n               auth_kind = excluded.auth_kind,\n               host = excluded.host,\n               updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "489e7ddba581d472e9177d756965b195bfc6990915abedffc6c9fc34d7bc2d80"
+}

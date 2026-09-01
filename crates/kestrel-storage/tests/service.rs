@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use kestrel_core::{
     clock::{Clock as _, FakeClock},
+    ids::MessageId,
     mime::{MimeParser, StalwartParser},
     protocol::{
         Address, BodyPreference, ConnectionState, Flag, FlagOp, FolderRole, MailProtocol, Provider,
@@ -60,6 +61,7 @@ async fn account_folder_message_roundtrip() {
             provider: Provider::Generic,
             protocol: MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -71,6 +73,7 @@ async fn account_folder_message_roundtrip() {
             provider: Provider::Generic,
             protocol: MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -157,6 +160,7 @@ async fn threading_groups_replies() {
             provider: Provider::Generic,
             protocol: MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -225,6 +229,7 @@ async fn outbox_lifecycle_and_blob_refs() {
             provider: Provider::Generic,
             protocol: MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -236,7 +241,7 @@ async fn outbox_lifecycle_and_blob_refs() {
         subject: "draft".into(),
     };
     let id = storage
-        .outbox_enqueue(account, envelope, b"raw draft bytes".to_vec())
+        .outbox_enqueue(account, envelope, b"raw draft bytes".to_vec(), None)
         .await
         .unwrap();
     let due = storage.outbox_due().await.unwrap();
@@ -309,6 +314,7 @@ async fn referenced_blob_survives_gc() {
             provider: Provider::Generic,
             protocol: MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -384,6 +390,7 @@ async fn index_and_search_roundtrip() {
             provider: Provider::Generic,
             protocol: MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -509,6 +516,7 @@ async fn message_view_sanitizes_and_flags_links() {
             provider: Provider::Generic,
             protocol: MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -563,4 +571,157 @@ async fn message_view_sanitizes_and_flags_links() {
     assert_eq!(load.view.parts.len(), 2);
     let _ = BodyPreference::Full;
     let _ = ConnectionState::Disconnected;
+}
+
+#[tokio::test]
+async fn snooze_schedule_and_due_detection() {
+    let (storage, _index, _search, clock, _dir) = setup("snooze").await;
+    let account = storage
+        .upsert_account(NewAccount {
+            name: "SnoozeTest".into(),
+            email: "snooze@example.org".into(),
+            provider: Provider::Generic,
+            protocol: MailProtocol::Imap,
+            auth_kind: "password".into(),
+            host: String::new(),
+        })
+        .await
+        .unwrap();
+
+    let folder = storage
+        .upsert_folder(NewFolder {
+            account,
+            remote_name: "INBOX".into(),
+            attributes: vec![],
+            role: Some(FolderRole::Inbox),
+            delimiter: "/".into(),
+            uid_validity: 1,
+            highest_modseq: 0,
+        })
+        .await
+        .unwrap();
+
+    let message = MessageId::from_uuid(uuid::Uuid::now_v7());
+
+    // Snooze for 5 minutes from now.
+    let now = clock.now_unix_ms();
+    let until = now + 5 * 60 * 1000;
+    storage
+        .enqueue_snooze(message, account, folder, until)
+        .await
+        .unwrap();
+
+    // Not due yet — clock hasn't advanced.
+    let due = storage.get_due_snoozes().await.unwrap();
+    assert!(due.is_empty(), "snooze should not be due yet");
+
+    // Advance clock past the snooze time.
+    clock.advance(6 * 60 * 1000);
+
+    // Now it should be due.
+    let due = storage.get_due_snoozes().await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].message_id, message);
+    assert_eq!(due[0].account_id, account);
+    assert_eq!(due[0].folder_id, folder);
+
+    // Remove the snooze.
+    storage.remove_snooze(message).await.unwrap();
+
+    // No longer due.
+    let due = storage.get_due_snoozes().await.unwrap();
+    assert!(due.is_empty(), "snooze should be removed");
+}
+
+#[tokio::test]
+async fn snooze_removal_by_message() {
+    let (storage, _index, _search, clock, _dir) = setup("snooze_remove").await;
+    let account = storage
+        .upsert_account(NewAccount {
+            name: "SnoozeRemoveTest".into(),
+            email: "snooze_rm@example.org".into(),
+            provider: Provider::Generic,
+            protocol: MailProtocol::Imap,
+            auth_kind: "password".into(),
+            host: String::new(),
+        })
+        .await
+        .unwrap();
+
+    let folder = storage
+        .upsert_folder(NewFolder {
+            account,
+            remote_name: "INBOX".into(),
+            attributes: vec![],
+            role: Some(FolderRole::Inbox),
+            delimiter: "/".into(),
+            uid_validity: 1,
+            highest_modseq: 0,
+        })
+        .await
+        .unwrap();
+
+    let msg1 = MessageId::from_uuid(uuid::Uuid::now_v7());
+    let msg2 = MessageId::from_uuid(uuid::Uuid::now_v7());
+    let until = clock.now_unix_ms() + 3_600_000;
+
+    storage
+        .enqueue_snooze(msg1, account, folder, until)
+        .await
+        .unwrap();
+    storage
+        .enqueue_snooze(msg2, account, folder, until)
+        .await
+        .unwrap();
+
+    // Remove only msg1.
+    storage.remove_snooze(msg1).await.unwrap();
+
+    let due = storage.get_due_snoozes().await.unwrap();
+    assert_eq!(due.len(), 0, "neither snooze is due yet");
+
+    // Advance clock so both would be due.
+    clock.advance(3_601_000);
+    let due = storage.get_due_snoozes().await.unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].message_id, msg2);
+}
+
+#[tokio::test]
+async fn outbox_send_after_defers_flush() {
+    let (storage, _index, _search, clock, _dir) = setup("send_after").await;
+    let account = storage
+        .upsert_account(NewAccount {
+            name: "SendAfterTest".into(),
+            email: "sa@example.org".into(),
+            provider: Provider::Generic,
+            protocol: MailProtocol::Imap,
+            auth_kind: "password".into(),
+            host: String::new(),
+        })
+        .await
+        .unwrap();
+
+    let envelope = OutboxEnvelope {
+        from: Address::bare("sa@example.org"),
+        to: vec![Address::bare("dest@example.org")],
+        cc: vec![],
+        bcc: vec![],
+        subject: "scheduled".into(),
+    };
+
+    let future = clock.now_unix_ms() + 3_600_000;
+    let _id = storage
+        .outbox_enqueue(account, envelope, b"scheduled draft".to_vec(), Some(future))
+        .await
+        .unwrap();
+
+    // Not due yet — send_after is in the future.
+    let due = storage.outbox_due().await.unwrap();
+    assert!(due.is_empty(), "send_after in the future should not be due");
+
+    // Advance past send_after.
+    clock.advance(3_601_000);
+    let due = storage.outbox_due().await.unwrap();
+    assert_eq!(due.len(), 1, "send_after in the past should be due");
 }

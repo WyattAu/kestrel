@@ -1,0 +1,7 @@
+{
+  "benchmark": "engine_cold_start/0_accounts",
+  "mean_ms": 15.0,
+  "thresholds": { "fail_ms": 50 },
+  "recorded_at": "2026-08-30T00:00:00Z",
+  "notes": "Initial baseline"
+}

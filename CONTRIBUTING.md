@@ -61,6 +61,15 @@ cargo nextest run --profile integration   # docker-based IMAP/SMTP tests
 cargo bench --bench ingest -- --save-baseline
 ```
 
+## Testing Providers
+
+To test against real email providers:
+
+1. Set up test credentials (see `tests/integration/providers/README.md`)
+2. Run individual tests: `./tests/integration/providers/gmail.sh`
+3. Run all tests: `for s in tests/integration/providers/*.sh; do bash "$s"; done`
+4. Document results in the PR description
+
 ## Security reports
 
 Do **not** open public issues for vulnerabilities. See `SECURITY.md`

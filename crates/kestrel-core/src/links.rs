@@ -151,6 +151,8 @@ enum Script {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -224,6 +226,38 @@ mod tests {
             "https://\u{202e}",
         ] {
             let _ = classify_link(candidate, candidate);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(crate::testkit::proptest_cases()))]
+
+        #[test]
+        fn link_classifier_never_panics_and_is_deterministic(
+            href in proptest::prelude::prop_oneof![
+                "https?://[a-z0-9.-]{1,30}(\\.[a-z]{2,6}){1,4}(/[a-z0-9_-]{0,20})?",
+                "https?://xn--[a-z0-9]{4,20}(\\.[a-z]{2,6}){1,3}",
+                "mailto:[a-z]{1,10}@[a-z]{1,10}\\.[a-z]{2,6}",
+                "[\\x00-\\x1f\\x7f]{0,20}",
+                "",
+            ],
+            display in proptest::prelude::prop_oneof![
+                "[a-z ]{0,30}",
+                "https?://[a-z0-9.-]{1,30}",
+                "[\\x00-\\x1f\\x7f]{0,20}",
+                "",
+            ],
+        ) {
+            let result = classify_link(&href, &display);
+            // Valid variant
+            prop_assert!(matches!(result, LinkRisk::Safe | LinkRisk::Punycode | LinkRisk::MixedScript | LinkRisk::DisplayMismatch));
+            // Idempotence
+            let result2 = classify_link(&href, &display);
+            prop_assert_eq!(result, result2);
+            // Empty display => never DisplayMismatch
+            if display.trim().is_empty() {
+                prop_assert_ne!(result, LinkRisk::DisplayMismatch);
+            }
         }
     }
 }

@@ -1,0 +1,12 @@
+東京は美しい街です
+한국어 텍스트입니다
+العربية نص
+English mixed with 日本語
+Width: ｉ（全角）
+Korean: 가나다라마
+Thai: กขฃคฅฆ
+Devanagari: कखगघ
+Emoji: 😀🎉🚀
+Combining: é = e + \u0301
+ZWJ sequence: 👨‍👩‍👧‍👦
+Right-to-left: مرحبا بالعالم

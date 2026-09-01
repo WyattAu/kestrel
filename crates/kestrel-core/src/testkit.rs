@@ -63,6 +63,15 @@ pub fn mime_corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/mime-corpus")
 }
 
+/// Returns the proptest case count, configurable via `KESTREL_PROPTOP_CASES` env var.
+#[must_use]
+pub fn proptest_cases() -> u32 {
+    std::env::var("KESTREL_PROPTOP_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128)
+}
+
 /// Loads every `.eml` file under the corpus root (recursive). Returns
 /// `(relative_name, bytes)` pairs sorted by name.
 #[must_use]

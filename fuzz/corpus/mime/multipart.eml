@@ -1,0 +1,21 @@
+From: sender@example.com
+To: recipient@example.com
+Subject: Multipart test email
+Date: Mon, 01 Jan 2024 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+This is the plain text part.
+=C3=A9 =C3=A0 =C3=BC
+
+--boundary123
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html><body><p>This is the HTML part.</p></body></html>
+
+--boundary123--

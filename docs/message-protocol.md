@@ -55,13 +55,25 @@ pub enum CommandPayload {
     ComposeSubmit { draft: Draft, reply: oneshot::Sender<Reply> },
     CancelOutbox { id: OutboxId, reply: oneshot::Sender<Reply> },
 
+    // Attachments
+    GetAttachment { message: MessageId, part: PartIdView,
+                    reply: oneshot::Sender<Reply> },
+
     // Sync control
     TriggerSync { account: AccountId, kind: SyncKind },   // fire-and-forget
     GoOffline, GoOnline,
     ResyncState { reply: oneshot::Sender<Reply> },        // after lag
 
+    // Account management
+    AddAccount { config: AccountConfig, password: SecretStr,
+                 reply: oneshot::Sender<Reply> },
+    TestConnection { config: AccountConfig, password: SecretStr,
+                     reply: oneshot::Sender<Reply> },
+    RemoveAccount { account: AccountId,
+                    reply: oneshot::Sender<Reply> },
+
     // Config & lifecycle
-    ConfigUpdated { snapshot: Arc<Config> },              // from ConfigWatcher
+    ConfigUpdated { snapshot: Arc<Config> },              // from watch_config()
     Shutdown { drain: bool },
 }
 
@@ -72,6 +84,7 @@ pub enum Reply {
     Message(MessageView),           // metadata + resolved body parts
     SearchResults(Vec<SearchHit>),
     Accepted,                       // queued/applied; follow-up events will follow
+    AttachmentData(Vec<u8>),        // raw attachment bytes
     Err(ServiceError),              // ADR 0007 taxonomy payload
 }
 ```

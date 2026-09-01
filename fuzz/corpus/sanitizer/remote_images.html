@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><title>Remote Resources</title></head>
+<body>
+<img src="http://evil.com/track.gif" width="1" height="1">
+<img src="https://attacker.com/pixel.png" alt="tracking">
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="inline">
+<iframe src="http://evil.com/phish.html" width="0" height="0"></iframe>
+<embed src="http://evil.com/bad.swf" type="application/x-shockwave-flash">
+<object data="http://evil.com/malware.exe" type="application/x-download">
+<link rel="stylesheet" href="http://evil.com/style.css">
+<script src="http://evil.com/steal.js"></script>
+<video src="http://evil.com/video.mp4" poster="http://evil.com/poster.jpg"></video>
+<audio src="http://evil.com/audio.mp3"></audio>
+<picture><source srcset="http://evil.com/large.jpg"><img src="fallback.jpg"></picture>
+</body>
+</html>

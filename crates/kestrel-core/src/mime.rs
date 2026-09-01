@@ -549,6 +549,8 @@ mod tests {
 
     use std::fmt::Write as _;
 
+    use proptest::prelude::*;
+
     use super::*;
 
     const SIMPLE: &str = "From: Alice <alice@example.org>\r\nTo: Bob <bob@example.org>\r\nSubject: Hello\r\nDate: Fri, 28 Aug 2026 10:00:00 +0000\r\nMessage-ID: <m1@example.org>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHi Bob!\r\n";
@@ -705,5 +707,54 @@ mod tests {
             ..ParsedMessage::default()
         };
         assert_eq!(text_for_index(&html_only), "html");
+    }
+
+    fn build_nested_multipart(depth: usize) -> String {
+        let mut parts = Vec::new();
+        for i in 0..depth {
+            parts.push(format!(
+                "--b{i}\r\nContent-Type: multipart/mixed; boundary=\"b{}\"\r\n\r\n",
+                i + 1
+            ));
+        }
+        parts.push("--innermost\r\nContent-Type: text/plain\r\n\r\ndeep\r\n".to_string());
+        for i in (0..depth).rev() {
+            parts.push(format!("--b{i}--\r\n"));
+        }
+        let body: String = parts.concat();
+        format!("From: x@x\r\nContent-Type: multipart/mixed; boundary=\"b0\"\r\n\r\n{body}")
+    }
+
+    fn build_excessive_headers(count: usize) -> String {
+        let mut headers = String::new();
+        for i in 0..count {
+            use std::fmt::Write;
+            let _ = write!(headers, "X-Pad-{i}: {i}\r\n");
+        }
+        format!("From: test@test\r\n{headers}\r\nbody")
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(crate::testkit::proptest_cases()))]
+
+        #[test]
+        fn parser_nesting_limit_always_trips(depth in (65usize..=80)) {
+            let msg = build_nested_multipart(depth);
+            let result = StalwartParser::parse(msg.as_bytes());
+            prop_assert!(result.is_err(), "expected limit error at depth {depth}");
+        }
+
+        #[test]
+        fn parser_header_count_limit_always_trips(count in (1025usize..=1075)) {
+            let msg = build_excessive_headers(count);
+            let result = StalwartParser::parse(msg.as_bytes());
+            prop_assert!(result.is_err(), "expected limit error at count {count}");
+        }
+
+        #[test]
+        fn parser_never_panics_on_arbitrary_bytes(bytes in proptest::collection::vec(0u8..=255u8, 0..2048)) {
+            // Must not panic
+            let _ = StalwartParser::parse(&bytes);
+        }
     }
 }

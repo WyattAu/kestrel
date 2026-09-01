@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, message_id, account_id, folder_id, snoozed_until, created_at\n             FROM snooze\n             WHERE snoozed_until <= ?1\n             ORDER BY snoozed_until",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "snooze",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "message_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "snooze",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "name": "account_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "snooze",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "name": "folder_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "snooze",
+            "name": "folder_id"
+          }
+        }
+      },
+      {
+        "name": "snoozed_until",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "snooze",
+            "name": "snoozed_until"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "snooze",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8c7956585704d7d54470985fd907dcd08b02bc4c24038a436d9b1f74e88f20c4"
+}

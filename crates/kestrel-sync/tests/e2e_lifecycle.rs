@@ -172,6 +172,7 @@ async fn integration_e2e_lifecycle() {
             provider: kestrel_core::protocol::Provider::Generic,
             protocol: kestrel_core::protocol::MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -366,6 +367,12 @@ async fn integration_e2e_lifecycle() {
         references: vec!["e2e-budget@example.org".into()],
         body_markdown: "**Approved.** The travel budget looks good for Q3.\n\n- Kestrel".into(),
         attachments: vec![],
+        pgp_sign: false,
+        pgp_encrypt: false,
+        smime_sign: false,
+        smime_encrypt: false,
+        send_after: None,
+        priority: kestrel_core::protocol::Priority::Normal,
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
     engine

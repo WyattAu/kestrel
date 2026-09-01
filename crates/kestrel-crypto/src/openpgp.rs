@@ -107,6 +107,75 @@ pub fn sign(secret_cert: &Cert, password: &SecretString, data: &[u8]) -> CryptoR
     Ok(sink)
 }
 
+/// Signs `data` and returns the raw (non-armored) PGP bytes.
+///
+/// This is a convenience wrapper around [`sign`] that strips the ASCII
+/// armor envelope, returning only the binary `OpenPGP` packet sequence.
+/// Useful for callers that need the raw signature for MIME part
+/// construction (`multipart/signed` per RFC 3156).
+///
+/// # Errors
+/// [`CryptoError::OpenPgp`] on key/algorithm failures.
+pub fn sign_bytes(
+    secret_cert: &Cert,
+    password: &SecretString,
+    data: &[u8],
+) -> CryptoResult<Vec<u8>> {
+    let armored = sign(secret_cert, password, data)?;
+    let text = String::from_utf8(armored)
+        .map_err(|e| CryptoError::OpenPgp(format!("armor not valid UTF-8: {e}")))?;
+    extract_raw_from_armored(&text)
+}
+
+/// Extracts raw binary `OpenPGP` data from an ASCII-armored message.
+fn extract_raw_from_armored(armored: &str) -> CryptoResult<Vec<u8>> {
+    use base64::Engine as _;
+    // Find the body between the header line and the checksum/footer.
+    // Armor format:
+    //   -----BEGIN PGP MESSAGE-----
+    //   [headers...]
+    //   <base64 body>
+    //   =<checksum>
+    //   -----END PGP MESSAGE-----
+    let mut lines = armored.lines();
+    // Skip until we find the BEGIN line.
+    let begin_line = lines
+        .find(|l| l.starts_with("-----BEGIN PGP"))
+        .ok_or_else(|| CryptoError::OpenPgp("missing armor begin line".into()))?;
+    let kind = begin_line
+        .trim_start_matches('-')
+        .trim_start_matches("BEGIN PGP ")
+        .trim_end_matches('-');
+    // Verify the end line matches.
+    let end_marker = format!("-----END PGP {kind}-----");
+
+    // Collect body lines (skip headers like "Version:", collect until checksum/footer).
+    let mut body_lines = Vec::new();
+    let mut found_end = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == end_marker {
+            found_end = true;
+            break;
+        }
+        if trimmed.starts_with('=') {
+            // Checksum line; skip.
+            continue;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        body_lines.push(trimmed);
+    }
+    if !found_end {
+        return Err(CryptoError::OpenPgp("missing armor end line".into()));
+    }
+    let body = body_lines.join("");
+    base64::engine::general_purpose::STANDARD
+        .decode(&body)
+        .map_err(|e| CryptoError::OpenPgp(format!("base64 decode: {e}")))
+}
+
 /// Encrypts `data` to the recipient certs, optionally signing with the
 /// unlocked sender key.
 ///
@@ -378,5 +447,43 @@ mod tests {
     #[test]
     fn parse_rejects_garbage() {
         assert!(parse_cert("not a cert at all").is_err());
+    }
+
+    #[test]
+    fn sign_bytes_returns_raw_packets() {
+        let (sender, _rev) = generate_cert("signbytes@example.org", None).unwrap();
+        let raw = sign_bytes(&sender, &empty_pw(), b"raw payload").unwrap();
+        // Should NOT contain ASCII armor markers.
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            !text.contains("BEGIN PGP"),
+            "sign_bytes must not return armored output"
+        );
+        // Must be non-empty binary data.
+        assert!(!raw.is_empty());
+        // First byte should be a valid PGP packet tag (0xC0..=0xCF or 0x80..=0xBF range).
+        assert!(
+            raw[0] & 0x80 != 0,
+            "first byte must be a PGP packet tag, got {:#x}",
+            raw[0]
+        );
+    }
+
+    #[test]
+    fn sign_bytes_and_sign_match_payload() {
+        let (sender, _rev) = generate_cert("both@example.org", None).unwrap();
+        let payload = b"identical payload";
+        let armored = sign(&sender, &empty_pw(), payload).unwrap();
+        let raw = sign_bytes(&sender, &empty_pw(), payload).unwrap();
+        // Both should produce non-empty output for the same input.
+        assert!(!armored.is_empty());
+        assert!(!raw.is_empty());
+        // The raw bytes should be shorter than the armored form (no armor headers/footer).
+        assert!(
+            raw.len() < armored.len(),
+            "raw ({}) should be shorter than armored ({})",
+            raw.len(),
+            armored.len()
+        );
     }
 }

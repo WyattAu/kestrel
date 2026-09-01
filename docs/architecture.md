@@ -84,7 +84,8 @@ the frontend (both binaries; see §7).
   shutdown) per ADR 0004.
 - **One service task per responsibility:** `SyncService` (per account),
   `StorageService`, `IndexService`, `SearchService`, `OutboxService`,
-  `CredentialService`, `ConfigWatcher`.
+  `CredentialService`. Config watching is implemented as a function
+  (`watch_config()`) in the engine assembly, not a standalone `ServiceId`.
 - **Blocking-pool usage only** for genuinely blocking FFI (keyring, webview
   glue) via `tokio::task::spawn_blocking`.
 
@@ -151,7 +152,7 @@ Frontend ─> Command::Search(query)
 
 | State | Owner | Location |
 |-------|-------|----------|
-| Account/config snapshot | `ConfigWatcher` (ADR 0006) | `Arc<Config>` + event bus |
+| Account/config snapshot | `watch_config()` (ADR 0006, engine assembly) | `Arc<Config>` + event bus |
 | Connection state machines | `SyncService` (per account) | in-task |
 | Sync cursors (`uidvalidity`, `highestmodseq`) | `SyncService`, persisted | SQLite `folders` row |
 | Metadata | `StorageService` | SQLite (WAL) |

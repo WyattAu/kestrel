@@ -30,6 +30,8 @@ sha2 = { workspace = true }
 uuid = { workspace = true }
 hmac = { workspace = true }
 pbkdf2 = { workspace = true }
+# S/MIME CMS bindings (requirements §9). License exception per ADR 0012.
+openssl = "0.10"
 # OpenPGP (Phase 5, requirements §9). Sequoia 2.x (fixed RUSTSEC-2025-0136
 # panic-on-malicious-PKESK in 1.x). OpenSSL crypto backend (production-ready
 # per Sequoia; system libssl). License exception per ADR 0012.
@@ -41,3 +43,8 @@ http = "1"
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "openpgp_crypto"
+harness = false

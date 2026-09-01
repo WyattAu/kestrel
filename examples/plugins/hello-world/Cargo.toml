@@ -1,0 +1,8 @@
+[package]
+name = "hello-world-plugin"
+version = "1.0.0"
+edition = "2021"
+description = "A sample Kestrel plugin that demonstrates the plugin API"
+
+[lib]
+crate-type = ["cdylib"]

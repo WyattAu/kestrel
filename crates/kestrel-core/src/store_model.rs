@@ -190,6 +190,14 @@ pub trait MailStore: Send + Sync {
     /// # Errors
     /// Storage failure.
     async fn write_blob(&self, bytes: Vec<u8>) -> Result<BlobHash, KestrelError>;
+    /// Returns decoded bytes for a specific MIME part of a message.
+    /// # Errors
+    /// Storage failure or part not found.
+    async fn get_attachment_data(
+        &self,
+        message: MessageId,
+        part_key: &str,
+    ) -> Result<Vec<u8>, KestrelError>;
     /// Mirrors `set_account_state`.
     /// # Errors
     /// Storage failure.
@@ -202,4 +210,39 @@ pub trait MailStore: Send + Sync {
     /// # Errors
     /// Storage failure.
     async fn get_message_view(&self, id: MessageId) -> Result<MessageView, KestrelError>;
+
+    // ---- snooze ----
+    /// Enqueue a snooze entry.
+    /// # Errors
+    /// Storage failure.
+    async fn enqueue_snooze(
+        &self,
+        message: MessageId,
+        account: AccountId,
+        folder: FolderId,
+        until: i64,
+    ) -> Result<(), KestrelError>;
+    /// Get all snoozes that have expired (due).
+    /// # Errors
+    /// Storage failure.
+    async fn get_due_snoozes(&self) -> Result<Vec<SnoozeEntry>, KestrelError>;
+    /// Remove a snooze by message id.
+    /// # Errors
+    /// Storage failure.
+    async fn remove_snooze(&self, message: MessageId) -> Result<(), KestrelError>;
+}
+
+/// A snooze entry returned by `get_due_snoozes`.
+#[derive(Clone, Debug)]
+pub struct SnoozeEntry {
+    /// Snooze id (for removal after processing).
+    pub id: String,
+    /// Snoozed message.
+    pub message: MessageId,
+    /// Account that owns the message.
+    pub account: AccountId,
+    /// Folder containing the message.
+    pub folder: FolderId,
+    /// When the snooze expires.
+    pub snoozed_until: i64,
 }

@@ -47,6 +47,7 @@ CREATE TABLE accounts (
     provider     TEXT NOT NULL,              -- generic|gmail|outlook|fastmail|jmap
     protocol     TEXT NOT NULL DEFAULT 'imap', -- imap|jmap
     auth_kind    TEXT NOT NULL,              -- password|oauth2
+    host         TEXT NOT NULL DEFAULT '',   -- IMAP/JMAP server hostname
     sync_state   TEXT NOT NULL DEFAULT 'disconnected', -- mirror of ConnectionState
     created_at   INTEGER NOT NULL,           -- unix ms
     updated_at   INTEGER NOT NULL
@@ -54,6 +55,7 @@ CREATE TABLE accounts (
 
 CREATE TABLE threads (               -- JWZ-lite threading roots
     id           TEXT PRIMARY KEY,
+    thread_key   TEXT NOT NULL UNIQUE, -- deterministic dedup key
     subject_norm TEXT NOT NULL,       -- lowercased, 're:'/'fwd:' stripped
     first_seen   INTEGER NOT NULL
 );
@@ -227,9 +229,9 @@ Design notes:
 
 ## 6. Migration Policy
 
-- `sqlx migrate` (ADR 0003): forward-only, append-only
-  `kestrel-storage/migrations/NNNN_description.sql`; every PR adding a
-  migration must state cache-rebuild impact.
+- `sqlx migrate` (ADR 0003): forward-only, append-only under
+  `kestrel-storage/migrations/cache/` and `kestrel-storage/migrations/data/`;
+  every PR adding a migration must state cache-rebuild impact.
 - **Breaking migrations** on `cache.db` are permitted and cheap: the engine
   may wipe + resync cache.db (offline metadata). **`data.db` and blobs are
   never wiped by migrations** — destructive `data.db` change requires an ADR

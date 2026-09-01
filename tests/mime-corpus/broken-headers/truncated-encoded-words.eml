@@ -1,0 +1,9 @@
+From: alice@example.com
+To: bob@example.com
+Subject: =?utf-8?q?this_is_a_truncated_encoded_word_with_no_closing
+Date: Mon, 31 Aug 2026 12:00:00 +0000
+Content-Type: text/plain; charset=utf-8
+
+This message has a truncated RFC 2047 encoded-word in the Subject
+header — the closing =? is missing. The parser must handle this
+gracefully without panicking.

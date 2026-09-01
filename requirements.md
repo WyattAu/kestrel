@@ -77,13 +77,18 @@ kestrel/
 
 ### 3.1 Metadata & State Storage (SQLite)
 
-- Database connection MUST run with `PRAGMA journal_mode = WAL;`, `PRAGMA synchronous = NORMAL;`, and `PRAGMA foreign_keys = ON;`.
-- **Core Schema Entities:**
-    - `accounts` (ID, name, email, provider, sync\_state)
-    - `folders` (ID, account\_id, remote\_name, attributes, delimiter, uid\_validity, highest\_modseq)
-    - `messages` (ID, folder\_id, uid, internal\_date, flags, message\_id, in\_reply\_to, subject, from\_addr, to\_addrs, cc\_addrs, size, is\_read, has\_attachments, thread\_id)
-    - `parts` (ID, message\_id, mime\_type, content\_id, disposition, encoding, byte\_size, blob\_sha256)
-    - `outbox` (ID, account\_id, raw\_rfc822\_blob, retry\_count, last\_error, created\_at)
+- Databases MUST run with `PRAGMA journal_mode = WAL;`, `PRAGMA synchronous = NORMAL;`, and `PRAGMA foreign_keys = ON;`.
+- **Dual-database design** (resolved by ADR 0009):
+    - **`cache.db`** (`$XDG_CACHE_HOME/kestrel/cache.db`) — rebuildable, syncable metadata:
+        - `folders` (ID, account\_id, remote\_name, attributes, delimiter, uid\_validity, highest\_modseq)
+        - `messages` (ID, folder\_id, uid, internal\_date, flags, message\_id, in\_reply\_to, subject, from\_addr, to\_addrs, cc\_addrs, size, is\_read, has\_attachments, thread\_id)
+        - `parts` (ID, message\_id, mime\_type, content\_id, disposition, encoding, byte\_size, blob\_sha256)
+        - `blobs` (sha256, byte\_size, refcount, created\_at, last\_gc\_at)
+    - **`data.db`** (`$XDG_DATA_HOME/kestrel/data.db`) — durable records, never wiped by migrations:
+        - `accounts` (ID, name, email, provider, sync\_state)
+        - `outbox` (ID, account\_id, raw\_rfc822\_blob, retry\_count, last\_error, created\_at)
+        - `settings` (key, value) — engine-level key/value
+        - `threads` (ID, subject\_norm, first\_seen)
 
 ### 3.2 Raw Body & Attachment Storage (Content-Addressed Storage)
 

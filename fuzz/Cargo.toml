@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 
 # Path dependency on the crate under test.
 kestrel-core = { path = "../crates/kestrel-core" }
+imap-next = { version = "0.3", features = ["stream", "starttls", "ext_condstore_qresync", "ext_namespace", "ext_utf8"] }
 
 [[bin]]
 name = "fuzz_mime_adapter"
@@ -37,6 +38,13 @@ bench = false
 [[bin]]
 name = "fuzz_terminal_sanitizer"
 path = "fuzz_targets/fuzz_terminal_sanitizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_imap_response"
+path = "fuzz_targets/fuzz_imap_response.rs"
 test = false
 doc = false
 bench = false

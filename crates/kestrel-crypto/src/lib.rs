@@ -11,9 +11,12 @@ pub mod error;
 pub mod oauth;
 pub mod openpgp;
 pub mod sasl;
+pub mod smime;
 pub mod tls;
 
-pub use credentials::{CredentialService, CredentialStore, InMemoryStore, KeyringStore};
+pub use credentials::{
+    CredentialService, CredentialStore, InMemoryStore, KeyringStore, resolve_credential_store,
+};
 pub use error::{CryptoError, CryptoResult};
 pub use kestrel_core::{
     sasl::{SaslMechanism, SaslSession},

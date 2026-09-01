@@ -45,12 +45,28 @@ pub struct SanitizedHtml {
 ///   (threat model §5).
 #[must_use]
 pub fn sanitize_html_body(input: &str) -> SanitizedHtml {
+    sanitize_html_body_with_remote(input, false)
+}
+
+/// Sanitizes an email HTML body for display with optional remote content
+/// allowance (defense-in-depth beneath the webview sandbox, requirements
+/// §4.2).
+///
+/// When `allow_remote` is `true`, remote `src` attributes are preserved
+/// (images are loaded from the network). When `false` (default), remote
+/// references are neutralized to a transparent placeholder.
+#[must_use]
+pub fn sanitize_html_body_with_remote(input: &str, allow_remote: bool) -> SanitizedHtml {
     let remote = count_remote_refs(input);
-    let neutralized = neutralize_remote_src(input);
+    let neutralized = if allow_remote {
+        input.to_string()
+    } else {
+        neutralize_remote_src(input)
+    };
     let cleaned = ammonia_builder().clean(&neutralized).to_string();
     SanitizedHtml {
         html: cleaned,
-        remote_blocked: remote,
+        remote_blocked: if allow_remote { 0 } else { remote },
     }
 }
 
@@ -252,6 +268,8 @@ fn hash_set(items: &[&'static str]) -> std::collections::HashSet<&'static str> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -320,5 +338,28 @@ mod tests {
     fn count_remote_refs_finds_all_schemes() {
         let html = "<img src='https://a/x'><img src=\"http://b/y\"><img src=\"//c/z\"><img src=\"cid:keep\"><a href='https://d/page'>l</a>";
         assert_eq!(count_remote_refs(html), 4);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(crate::testkit::proptest_cases()))]
+
+        #[test]
+        fn sanitizer_removes_all_control_chars(input in "[\\t\\n\\r\\x00-\\x08\\x0b-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\x20-\\x7e\\u{00a0}-\\u{00ff}]{0,512}") {
+            let clean = sanitize_terminal_text(&input);
+            // No ESC
+            prop_assert!(!clean.contains('\x1b'), "ESC found in output");
+            // No C0 (except \t\n\r) and no C1
+            for ch in clean.chars() {
+                let cp = ch as u32;
+                if cp == 0x09 || cp == 0x0a || cp == 0x0d {
+                    continue;
+                }
+                prop_assert!(cp >= 0x20 && !(0x7f..=0x9f).contains(&cp),
+                    "forbidden char U+{cp:04X} in output");
+            }
+            // Idempotence
+            let clean2 = sanitize_terminal_text(&clean);
+            prop_assert_eq!(clean, clean2, "sanitizer not idempotent");
+        }
     }
 }

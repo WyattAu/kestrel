@@ -6,8 +6,12 @@ members = [
     "crates/kestrel-sync",
     "crates/kestrel-crypto",
     "crates/kestrel-engine",
+    "crates/kestrel-filter",
+    "crates/kestrel-calcard",
+    "crates/kestrel-plugin",
     "crates/kestrel-tui",
     "crates/kestrel-gui",
+    "crates/kestrel-mobile",
 ]
 
 [workspace.package]
@@ -43,7 +47,10 @@ kestrel-core = { path = "crates/kestrel-core", version = "0.1.0" }
 kestrel-storage = { path = "crates/kestrel-storage", version = "0.1.0" }
 kestrel-sync = { path = "crates/kestrel-sync", version = "0.1.0" }
 kestrel-crypto = { path = "crates/kestrel-crypto", version = "0.1.0" }
+kestrel-filter = { path = "crates/kestrel-filter", version = "0.1.0" }
+kestrel-calcard = { path = "crates/kestrel-calcard", version = "0.1.0" }
 kestrel-engine = { path = "crates/kestrel-engine", version = "0.1.0" }
+kestrel-plugin = { path = "crates/kestrel-plugin", version = "0.1.0" }
 
 # Async runtime (requirements §1.1)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs", "signal", "process", "parking_lot"] }

@@ -11,6 +11,17 @@ pub struct RenderedLine {
     pub text: String,
     /// Hyperlinks: (`start_byte`, `end_byte`, url).
     pub links: Vec<(usize, usize, String)>,
+    /// Whether this line is inside a blockquote (for dim styling).
+    pub is_quoted: bool,
+}
+
+fn decode_entities(text: &str) -> String {
+    text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
 }
 
 /// Renders sanitized HTML into terminal-friendly lines.
@@ -91,10 +102,12 @@ pub fn html_to_lines(html: &str, width: usize) -> Vec<RenderedLine> {
             _ if in_tag => tag_name.push(c),
             _ => {
                 let sanitized = sanitize_terminal_text(&c.to_string());
-                if tag_stack.iter().any(|t| t == "blockquote") {
-                    // Indent blockquote content.
+                let in_blockquote = tag_stack.iter().any(|t| t == "blockquote");
+                if in_blockquote {
+                    current.is_quoted = true;
+                    // Indent blockquote content with a prominent bar.
                     if current.text.is_empty() {
-                        current.text.push_str("  │ ");
+                        current.text.push_str("  \u{2502} ");
                     }
                 }
                 current.text.push_str(&sanitized);
@@ -110,12 +123,16 @@ fn push_line(lines: &mut Vec<RenderedLine>, current: &mut RenderedLine, width: u
         lines.push(RenderedLine::default());
         return;
     }
+    // Decode HTML entities before word-wrapping.
+    current.text = decode_entities(&current.text);
+    let is_quoted = current.is_quoted;
     // Word-wrap at width.
     let text = current.text.clone();
     if text.len() <= width {
         lines.push(RenderedLine {
             text,
             links: current.links.clone(),
+            is_quoted,
         });
     } else {
         let mut offset = 0usize;
@@ -140,12 +157,14 @@ fn push_line(lines: &mut Vec<RenderedLine>, current: &mut RenderedLine, width: u
             lines.push(RenderedLine {
                 text: line_text,
                 links: line_links,
+                is_quoted,
             });
             offset = break_at + 1;
         }
     }
     current.text.clear();
     current.links.clear();
+    current.is_quoted = false;
 }
 
 fn extract_href(tag: &str) -> Option<String> {

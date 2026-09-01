@@ -18,14 +18,18 @@ use kestrel_core::{
     error::KestrelError,
     ids::SystemIdGenerator,
     paths::Paths,
-    protocol::{Command, CommandPayload, EngineEvent, FrontendKind, Reply},
+    protocol::{Command, CommandPayload, EngineEvent, FrontendKind, MailProtocol, Reply},
 };
 use kestrel_storage::{IndexService, SearchService, StorageService};
+use kestrel_sync::{OutboxService, SmtpParams, SmtpSecurity};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 pub mod bus;
+pub mod filter;
 pub mod router;
+pub mod snooze_service;
 pub mod supervisor;
 
 pub use bus::EventBus;
@@ -79,16 +83,21 @@ impl Engine {
         config: Arc<Config>,
         paths: Arc<Paths>,
     ) -> Result<EngineHandle, KestrelError> {
+        let store =
+            kestrel_crypto::resolve_credential_store().map_err(|e| KestrelError::StorageIo {
+                detail: e.to_string(),
+            })?;
         Self::spawn_with(
             config,
             paths,
             Arc::new(SystemIdGenerator),
             Arc::new(SystemClock),
+            store,
         )
         .await
     }
 
-    /// [`Engine::spawn`] with injected id/clock sources (tests, embedded).
+    /// [`Engine::spawn`] with injected id/clock/sources (tests, embedded).
     ///
     /// # Errors
     /// [`KestrelError`] when storage cannot open.
@@ -98,7 +107,9 @@ impl Engine {
         paths: Arc<Paths>,
         ids: Arc<dyn kestrel_core::ids::IdGenerator>,
         clock: Arc<dyn Clock>,
+        store: Arc<dyn kestrel_crypto::CredentialStore>,
     ) -> Result<EngineHandle, KestrelError> {
+        let _span = tracing::info_span!("engine").entered();
         paths.ensure().map_err(|e| KestrelError::StorageIo {
             detail: e.to_string(),
         })?;
@@ -202,15 +213,148 @@ impl Engine {
             });
         }
 
+        // Snooze expiry service: polls for due snoozes every 60s.
+        {
+            let storage_for_snooze: std::sync::Arc<dyn kestrel_core::store_model::MailStore> =
+                std::sync::Arc::new(storage.clone());
+            let snooze_cancel = engine_cancel.child_token();
+            let snooze_service = snooze_service::SnoozeService::new(
+                storage_for_snooze,
+                Arc::clone(&clock),
+                bus.inner_sender(),
+            );
+            let snooze_span = tracing::info_span!("snooze");
+            tokio::spawn(
+                async move { snooze_service.run(snooze_cancel).await }.instrument(snooze_span),
+            );
+        }
+
+        // Filter service: evaluates rules on incoming mail.
+        {
+            let filter_cancel = engine_cancel.child_token();
+            let filter_service =
+                filter::FilterService::new(storage.clone(), Arc::clone(&clock), bus.inner_sender());
+            let filter_span = tracing::info_span!("filter");
+            tokio::spawn(
+                async move { filter_service.run(filter_cancel).await }.instrument(filter_span),
+            );
+        }
+
         // Router.
+        let creds = std::sync::Arc::new(kestrel_crypto::CredentialService::new(store));
         let router = EngineRouter::new(
             config,
-            storage,
+            storage.clone(),
             search,
             bus.clone(),
             Arc::clone(&ids),
             Arc::clone(&clock),
+            std::sync::Arc::clone(&creds),
         );
+
+        // Spawn JMAP sync + outbox services for existing accounts.
+        if let Ok(accounts) = storage.list_accounts().await {
+            for acct in &accounts {
+                if acct.protocol == MailProtocol::Jmap {
+                    let token = creds
+                        .password(acct.id)
+                        .unwrap_or_default()
+                        .unwrap_or_else(|| kestrel_core::secrets::SecretString::new(String::new()));
+                    let host = acct.host.clone();
+                    let store: std::sync::Arc<dyn kestrel_core::store_model::MailStore> =
+                        std::sync::Arc::new(storage.clone());
+                    let (ev_tx, mut ev_rx) = mpsc::channel(64);
+                    let bus_clone = bus.clone();
+                    tokio::spawn(async move {
+                        while let Some(ev) = ev_rx.recv().await {
+                            bus_clone.publish(ev);
+                        }
+                    });
+                    let cancel = engine_cancel.child_token();
+                    kestrel_sync::JmapSyncService::spawn(
+                        acct.id,
+                        host,
+                        token,
+                        store,
+                        Arc::clone(&clock),
+                        ev_tx,
+                        cancel,
+                    );
+                }
+
+                // Spawn outbox service for accounts with known provider presets.
+                if !matches!(
+                    acct.provider,
+                    kestrel_core::protocol::Provider::Generic
+                        | kestrel_core::protocol::Provider::Jmap
+                ) {
+                    let preset =
+                        kestrel_core::provider::provider_preset(&acct.provider, &acct.email);
+                    let secret = creds
+                        .password(acct.id)
+                        .unwrap_or_default()
+                        .unwrap_or_else(|| kestrel_core::secrets::SecretString::new(String::new()));
+                    let smtp_params = SmtpParams {
+                        host: preset.smtp_host.clone(),
+                        port: preset.smtp_port,
+                        username: preset
+                            .username
+                            .clone()
+                            .unwrap_or_else(|| preset.email.clone()),
+                        secret: secret.clone(),
+                        oauth2: preset.auth_kind == "oauth2",
+                        security: match preset.smtp_security.as_str() {
+                            "starttls" => SmtpSecurity::StartTls,
+                            _ => SmtpSecurity::ImplicitTls,
+                        },
+                    };
+                    let imap_security = match preset.imap_security.as_str() {
+                        "starttls" => kestrel_sync::Security::StartTls,
+                        _ => kestrel_sync::Security::Tls,
+                    };
+                    let imap_connect = kestrel_sync::ConnectParams {
+                        host: preset.imap_host.clone(),
+                        port: preset.imap_port,
+                        security: imap_security,
+                        username: preset
+                            .username
+                            .clone()
+                            .unwrap_or_else(|| preset.email.clone()),
+                        secret,
+                        mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
+                        tls: tokio_rustls::TlsConnector::from(
+                            kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
+                        ),
+                        sasl_factory: std::sync::Arc::new(|mech, user, secret| {
+                            kestrel_crypto::sasl::start(mech, user, secret)
+                        }),
+                    };
+                    let online = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+                    let (outbox_ev_tx, mut outbox_ev_rx) = mpsc::channel(64);
+                    let outbox_bus_clone = bus.clone();
+                    tokio::spawn(async move {
+                        while let Some(ev) = outbox_ev_rx.recv().await {
+                            outbox_bus_clone.publish(ev);
+                        }
+                    });
+                    let outbox_store: std::sync::Arc<dyn kestrel_core::store_model::MailStore> =
+                        std::sync::Arc::new(storage.clone());
+                    let outbox_cancel = engine_cancel.child_token();
+                    let outbox = OutboxService::new(
+                        outbox_store,
+                        smtp_params,
+                        imap_connect,
+                        Arc::clone(&clock),
+                        outbox_ev_tx,
+                        online,
+                    );
+                    let outbox_span = tracing::info_span!("outbox", account = %acct.id);
+                    tokio::spawn(
+                        async move { outbox.run(outbox_cancel).await }.instrument(outbox_span),
+                    );
+                }
+            }
+        }
         let router_cancel = engine_cancel.child_token();
         let router_done = done_tx;
         tokio::spawn(async move {

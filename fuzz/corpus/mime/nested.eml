@@ -1,0 +1,35 @@
+From: sender@example.com
+To: recipient@example.com
+Subject: Nested MIME test
+Date: Mon, 01 Jan 2024 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: multipart/alternative; boundary="inner"
+
+--inner
+Content-Type: text/plain; charset="utf-8"
+
+Plain text version
+
+--inner
+Content-Type: text/html; charset="utf-8"
+
+<html><body><p>HTML version</p></body></html>
+
+--inner--
+
+--outer
+Content-Type: application/pdf; name="test.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="test.pdf"
+
+JVBERi0xLjAKMyAwIG9iago8PAovVHlwZSAvUGFnZQovUGFyZW50IDQgMCBSCi9SZXNvdXJj
+ZXMgMSAwIFIKL01lZGlhQm94IFswIDAgNjEyIDc5Ml0KL0ZpbHRlciAvRmxhdGVEZWNvZGUK
+L0xlbmd0aCA0NAovQ0JveCBbMCAwIDYxMiA3OTJdCj4+CnN0cmVhbQpCVAovRjIgMjQgVGYK
+NTAwIDcwIFRkCihUZXN0IFBERikgVGkKRVQKRU4KZW5kb2JqCnhyZWYKMCA1CjAwMDAwMDAw
+MDY2NTUyCjAwMDAwMDAwMDY2NTk4CjAwMDAwMDAwMDY2NjUzCjAwMDAwMDAwMDY2NzA0CjAw
+MDAwMDAwMDY2NzUwCnRyYWlsZXIKPDwKU2l6ZSA1Ci9Sb290IDEgMCBSPgovSW5mbyAzIDAg
+Ugo+PgpzdGFydHhyZWYKNzYKJSVFT0Y=
+--outer--

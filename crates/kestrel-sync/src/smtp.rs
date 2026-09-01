@@ -11,6 +11,7 @@ use lettre::{
     address::{Address, Envelope},
     transport::smtp::authentication::{Credentials, Mechanism},
 };
+use tracing::instrument;
 
 /// SMTP transport security.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +84,7 @@ fn build_transport(
 /// # Errors
 /// Mapped SMTP failures: 4xx → `SmtpTransient`, 5xx → `MessageRejected`,
 /// connection issues → `ConnectionLost`/`TlsHandshake`.
+#[instrument(skip_all)]
 pub async fn submit_envelope(
     params: &SmtpParams,
     envelope_from: &str,

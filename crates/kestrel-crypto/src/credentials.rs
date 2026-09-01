@@ -3,11 +3,17 @@
 //! Secrets live in [`SecretString`] (zeroized on drop) and are never
 //! logged, never in `SQLite`, never in config (ADR 0008).
 
-use std::{collections::HashMap, sync::RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use kestrel_core::{ids::AccountId, secrets::SecretString};
 
-use crate::error::{CryptoError, CryptoResult};
+use crate::{
+    error::{CryptoError, CryptoResult},
+    openpgp,
+};
 
 /// Keyring service name.
 const SERVICE: &str = "kestrel";
@@ -131,14 +137,14 @@ impl CredentialStore for InMemoryStore {
 }
 
 /// Credential service facade over a store.
-pub struct CredentialService<S: CredentialStore> {
-    store: S,
+pub struct CredentialService {
+    store: Arc<dyn CredentialStore>,
 }
 
-impl<S: CredentialStore> CredentialService<S> {
+impl CredentialService {
     /// Wraps a store.
     #[must_use]
-    pub fn new(store: S) -> Self {
+    pub fn new(store: Arc<dyn CredentialStore>) -> Self {
         Self { store }
     }
 
@@ -174,14 +180,152 @@ impl<S: CredentialStore> CredentialService<S> {
         self.store.load(account, "oauth_refresh")
     }
 
+    /// Stores an `OAuth2` refresh token from a plain string.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn store_refresh_token(&self, account: AccountId, token: &str) -> CryptoResult<()> {
+        self.store.save(
+            account,
+            "oauth_refresh",
+            &SecretString::new(token.to_owned()),
+        )
+    }
+
+    /// Loads the `OAuth2` refresh token as a plain string.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn get_refresh_token(&self, account: AccountId) -> CryptoResult<Option<String>> {
+        self.store
+            .load(account, "oauth_refresh")
+            .map(|opt| opt.map(|s| s.expose().to_owned()))
+    }
+
     /// Deletes every credential of an account (account removal path).
     ///
     /// # Errors
     /// Backend failure.
     pub fn purge(&self, account: AccountId) -> CryptoResult<()> {
         self.store.delete(account, "password")?;
-        self.store.delete(account, "oauth_refresh")
+        self.store.delete(account, "oauth_refresh")?;
+        self.store.delete(account, "pgp_secret_key")?;
+        self.store.delete(account, "pgp_secret_password")?;
+        self.store.delete(account, "pgp_public_keys")
     }
+
+    /// Stores the user's secret PGP cert (armored) and optional key password.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn set_pgp_secret_cert(
+        &self,
+        account: AccountId,
+        armored_cert: &str,
+        password: Option<&SecretString>,
+    ) -> CryptoResult<()> {
+        self.store.save(
+            account,
+            "pgp_secret_key",
+            &SecretString::new(armored_cert.to_owned()),
+        )?;
+        if let Some(pw) = password {
+            self.store.save(account, "pgp_secret_password", pw)?;
+        }
+        Ok(())
+    }
+
+    /// Loads and parses the user's secret PGP cert for the given account.
+    ///
+    /// Returns `Ok(None)` when no key is configured.
+    ///
+    /// # Errors
+    /// Backend failure or invalid cert data.
+    pub fn pgp_secret_cert(
+        &self,
+        account: AccountId,
+    ) -> CryptoResult<Option<sequoia_openpgp::Cert>> {
+        let Some(armored) = self.store.load(account, "pgp_secret_key")? else {
+            return Ok(None);
+        };
+        let cert = openpgp::parse_cert(armored.expose())
+            .map_err(|e| CryptoError::OpenPgp(format!("pgp secret cert: {e}")))?;
+        Ok(Some(cert))
+    }
+
+    /// Returns the password for the account's PGP secret key, if stored.
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn pgp_secret_password(&self, account: AccountId) -> CryptoResult<Option<SecretString>> {
+        self.store.load(account, "pgp_secret_password")
+    }
+
+    /// Stores a public PGP key (armored cert) for a recipient address.
+    ///
+    /// Multiple keys per address are supported (appended with a separator).
+    ///
+    /// # Errors
+    /// Backend failure.
+    pub fn add_pgp_public_key(&self, address: &str, armored_cert: &str) -> CryptoResult<()> {
+        let key = format!("pgp_pub:{address}");
+        let existing = self
+            .store
+            .load(AccountId::from_uuid(uuid::Uuid::nil()), &key)?;
+        let value = match existing {
+            Some(prev) => format!("{}|||{}", prev.expose(), armored_cert),
+            None => armored_cert.to_owned(),
+        };
+        self.store.save(
+            AccountId::from_uuid(uuid::Uuid::nil()),
+            &key,
+            &SecretString::new(value),
+        )
+    }
+
+    /// Loads all public PGP certs for the given recipient addresses.
+    ///
+    /// # Errors
+    /// Backend failure or invalid cert data.
+    pub fn pgp_recipient_certs(
+        &self,
+        to: &[kestrel_core::protocol::Address],
+        cc: &[kestrel_core::protocol::Address],
+    ) -> CryptoResult<Vec<sequoia_openpgp::Cert>> {
+        let nil_account = AccountId::from_uuid(uuid::Uuid::nil());
+        let mut certs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for addr in to.iter().chain(cc.iter()) {
+            if !seen.insert(addr.email.as_str()) {
+                continue;
+            }
+            let key = format!("pgp_pub:{}", addr.email);
+            if let Some(data) = self.store.load(nil_account, &key)? {
+                for part in data.expose().split("|||") {
+                    let trimmed = part.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let cert = openpgp::parse_cert(trimmed).map_err(|e| {
+                        CryptoError::OpenPgp(format!("pgp public key for {}: {e}", addr.email))
+                    })?;
+                    certs.push(cert);
+                }
+            }
+        }
+        Ok(certs)
+    }
+}
+
+/// Resolves the credential store for the current environment.
+///
+/// Returns a `KeyringStore` backed by the OS secret service.
+///
+/// # Errors
+/// Currently infallible.
+pub fn resolve_credential_store() -> CryptoResult<Arc<dyn CredentialStore>> {
+    Ok(Arc::new(KeyringStore))
 }
 
 #[cfg(test)]
@@ -198,7 +342,7 @@ mod tests {
 
     #[test]
     fn in_memory_roundtrip_and_purge() {
-        let svc = CredentialService::new(InMemoryStore::new());
+        let svc = CredentialService::new(Arc::new(InMemoryStore::new()));
         let a = acct();
         svc.set_password(a, &SecretString::new("hunter2".into()))
             .unwrap();
@@ -223,12 +367,59 @@ mod tests {
     #[test]
     fn kinds_are_namespaced() {
         let a = acct();
-        let svc = CredentialService::new(InMemoryStore::new());
+        let svc = CredentialService::new(Arc::new(InMemoryStore::new()));
         svc.set_password(a, &SecretString::new("p".into())).unwrap();
         svc.set_refresh_token(a, &SecretString::new("t".into()))
             .unwrap();
         assert_eq!(svc.password(a).unwrap().unwrap().expose(), "p");
         assert_eq!(svc.refresh_token(a).unwrap().unwrap().expose(), "t");
+    }
+
+    #[test]
+    fn store_and_get_refresh_token_roundtrip() {
+        let svc = CredentialService::new(Arc::new(InMemoryStore::new()));
+        let a = acct();
+        assert!(svc.get_refresh_token(a).unwrap().is_none());
+        svc.store_refresh_token(a, "refresh-abc").unwrap();
+        assert_eq!(
+            svc.get_refresh_token(a).unwrap(),
+            Some("refresh-abc".to_owned())
+        );
+    }
+
+    #[test]
+    fn store_refresh_token_replaces_previous() {
+        let svc = CredentialService::new(Arc::new(InMemoryStore::new()));
+        let a = acct();
+        svc.store_refresh_token(a, "old-rt").unwrap();
+        svc.store_refresh_token(a, "new-rt").unwrap();
+        assert_eq!(svc.get_refresh_token(a).unwrap(), Some("new-rt".to_owned()));
+    }
+
+    #[test]
+    fn refresh_token_isolation_between_accounts() {
+        let svc = CredentialService::new(Arc::new(InMemoryStore::new()));
+        let a1 = acct();
+        let a2 = acct();
+        svc.store_refresh_token(a1, "rt-1").unwrap();
+        svc.store_refresh_token(a2, "rt-2").unwrap();
+        assert_eq!(svc.get_refresh_token(a1).unwrap(), Some("rt-1".to_owned()));
+        assert_eq!(svc.get_refresh_token(a2).unwrap(), Some("rt-2".to_owned()));
+    }
+
+    #[test]
+    fn credential_service_works_with_trait_object() {
+        let store: Arc<dyn CredentialStore> = Arc::new(InMemoryStore::new());
+        let svc = CredentialService::new(store);
+        let a = acct();
+        svc.set_password(a, &SecretString::new("trait-object-pw".into()))
+            .unwrap();
+        assert_eq!(
+            svc.password(a).unwrap(),
+            Some(SecretString::new("trait-object-pw".into()))
+        );
+        svc.purge(a).unwrap();
+        assert!(svc.password(a).unwrap().is_none());
     }
 
     #[test]

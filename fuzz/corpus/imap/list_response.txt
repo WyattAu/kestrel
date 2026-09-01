@@ -1,0 +1,3 @@
+* LIST (\\HasNoChildren) "." "INBOX"
+* LIST (\\HasChildren \\Marked) "." "Drafts"
+* LIST (\\HasNoChildren \\UnMarked) "." "Sent"

@@ -1,0 +1,13 @@
+[31mRed text[0m
+[1;32mBold green[0m
+[38;5;196mTrue color red[0m
+[48;2;0;255;0mRGB background[0m
+[?25h[?25lShow/hide cursor
+[2J[HClear screen
+[3A[2BMove up 3, down 2
+[5;10HPosition cursor row 5 col 10
+[KClear line
+[2KClear entire line
+[7mReverse video[27m
+[4mUnderline[24m
+[9mStrikethrough[29m

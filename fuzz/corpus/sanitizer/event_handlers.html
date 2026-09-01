@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><title>Event Handlers</title></head>
+<body>
+<div onmouseover="steal()">hover me</div>
+<input onfocus="malicious()" type="text">
+<body onload="init()">
+<video onerror="hack()" src="bad.mp4">
+<img src="good.jpg" onerror="alert('xss')">
+<button onclick="exfiltrate()">Click</button>
+<textarea oninput="steal(this.value)"></textarea>
+<select onchange="send(this.value)"><option>A</option></select>
+<marquee onstart="evil()">scrolling</marquee>
+<object onerror="exploit()"></object>
+<details ontoggle="malicious()"><summary>click</summary></details>
+</body>
+</html>

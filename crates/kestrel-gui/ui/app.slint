@@ -1,218 +1,1101 @@
-// Slint UI (ADR 0001): native shell + account setup wizard.
-// The HTML body renders in the sandboxed wry viewport (viewport.rs).
+import { Button, CheckBox, LineEdit, ComboBox, VerticalBox, HorizontalBox, ListView, Palette } from "std-widgets.slint";
 
-import { Button, LineEdit, ComboBox, CheckBox } from "std-widgets.slint";
+export { Palette }
+
+export global DropApi {
+    pure callback can-drop(data-transfer) -> DragAction;
+    pure callback transfer-to-string(data-transfer) -> string;
+}
+
+export global DragState {
+    in property <int> dragged-msg-idx: -1;
+    in property <bool> is-dragging: false;
+}
 
 export component AppWindow inherits Window {
-    title: "Kestrel";
     preferred-width: 1200px;
     preferred-height: 800px;
 
-    // ─── State ───
-    in-out property <string> status-text: "Welcome";
-    in-out property <string> connection-state: "disconnected";
-    in-out property <int> message-count: 0;
-    in-out property <int> folder-count: 0;
-    in-out property <int> account-count: 0;
-    in-out property <string> selected-subject: "";
-    in-out property <string> selected-from: "";
-    in-out property <bool> show-setup: account-count == 0;
-    in-out property <bool> setup-busy: false;
-    in-out property <string> setup-error: "";
-
-    // Setup wizard fields
-    in-out property <string> setup-display-name: "";
+    in property <bool> dark-mode: Palette.color-scheme == ColorScheme.dark;
+    in property <string> status-text: "Kestrel";
+    in property <string> connection-state: "disconnected";
+    in property <int> account-count: 0;
+    in property <[string]> account-names: [];
+    in property <[color]> account-colors: [];
+    in property <int> selected-account-idx: 0;
+    in property <bool> show-setup: true;
+    in property <bool> setup-busy: false;
+    in property <string> setup-error: "";
     in-out property <string> setup-email: "";
     in-out property <string> setup-password: "";
     in-out property <string> setup-imap-host: "";
     in-out property <string> setup-smtp-host: "";
+    in property <string> provider-name: "";
+    in property <string> provider-help: "";
+    // Multi-step setup wizard properties
+    in property <int> setup-step: 1; // 1=email, 2=password, 3=review, 4=testing
+    in property <string> setup-provider-name: "";
+    in property <string> setup-detected-hosts: "";
+    in property <bool> setup-is-oauth2: false;
+    in property <string> setup-oauth2-button-label: "";
+    in property <string> setup-testing-status: "";
+    // Computed setup properties
+    in property <bool> setup-email-valid: false;
+    in property <[string]> folder-names: [];
+    in property <[int]> folder-unreads: [];
+    in property <int> selected-folder-idx: -1;
+    in property <[string]> message-subjects: [];
+    in property <[string]> message-froms: [];
+    in property <[string]> message-dates: [];
+    in property <[int]> thread-depths: [];
+    in property <int> selected-msg-idx: -1;
+    in property <int> total-messages: 0;
+    in property <string> preview-from: "";
+    in property <string> preview-subject: "";
+    in property <string> preview-body: "";
+    in property <bool> preview-is-html: false;
+    in property <bool> show-compose: false;
+    in-out property <string> compose-to: "";
+    in-out property <string> compose-cc: "";
+    in property <bool> show-bcc: false;
+    in-out property <string> compose-bcc: "";
+    in-out property <string> compose-subject: "";
+    in-out property <string> compose-body: "";
+    in property <bool> compose-preview-mode: false;
+    in-out property <bool> compose-pgp-sign: false;
+    in-out property <bool> compose-pgp-encrypt: false;
+    in property <bool> compose-busy: false;
+    in property <string> compose-error: "";
+    in property <string> compose-attachment-names: "";
+    in-out property <string> compose-from: "";
+    in-out property <int> compose-priority-idx: 1;
+    in property <[string]> compose-priority-options: ["High", "Normal", "Low"];
+    // Contact autocomplete for compose To/Cc fields
+    in property <[string]> contact-suggestions: [];
+    in property <bool> show-contact-suggestions: false;
+    in property <string> active-compose-field: ""; // "to" or "cc"
+    // Template selection
+    in property <[string]> template-names: [];
+    in-out property <string> selected-template: "";
+    in-out property <string> search-query: "";
+    // Remote content toggle
+    in property <bool> show-remote-content: false;
+    in property <int> remote-blocked-count: 0;
+    // Schedule properties
+    in-out property <int> compose-send-after: 0; // 0 = send now, >0 = unix ms
+    in-out property <bool> show-schedule-input: false;
+    // Calendar properties
+    in property <bool> show-calendar: false;
+    in property <[string]> calendar-event-summaries: [];
+    in property <int> selected-calendar-idx: -1;
+    in property <string> calendar-event-detail: "";
+    in property <string> calendar-event-title: "";
+    in property <string> calendar-event-start: "";
+    in property <string> calendar-event-end: "";
+    in property <string> calendar-event-location: "";
+    in property <string> calendar-event-description: "";
+    // Contacts properties
+    in property <bool> show-contacts: false;
+    in property <[string]> contact-names: [];
+    in property <[string]> contact-emails: [];
+    in property <int> selected-contact-idx: -1;
+    // Toast notification
+    in property <bool> show-toast: false;
+    in property <string> toast-message: "";
+    in property <string> toast-type: "info"; // "info", "success", "error"
+    // Skeleton loading
+    in property <bool> loading-messages: false;
+    in property <bool> loading-preview: false;
+    // Pane width properties (persisted in config in future)
+    in-out property <length> folder-pane-width: 180px;
+    in-out property <length> message-pane-width: 340px;
 
-    // Folder names for the sidebar (model)
-    in-out property <[string]> folder-names: [];
+    // Settings overlay
+    in property <bool> show-settings: false;
+    in property <[string]> settings-theme-options: ["Auto", "Catppuccin Mocha", "Catppuccin Latte", "Catppuccin Macchiato", "Catppuccin Frappe", "Dracula", "Gruvbox Dark", "Solarized Dark", "Solarized Light"];
+    in-out property <int> settings-theme-idx: 0;
+    in-out property <string> settings-signature: "-- \nBest regards";
+    in property <[string]> settings-template-names: [];
+    in-out property <string> settings-selected-template: "";
+    in-out property <bool> settings-notifications-enabled: true;
+    in-out property <bool> settings-notifications-show-subject: false;
+    // Per-account notification settings
+    in property <[bool]> settings-account-notifications-enabled: [];
+    in property <[bool]> settings-account-notifications-show-subject: [];
+    in property <[bool]> settings-account-notifications-mute: [];
+    in-out property <string> settings-idle-timeout: "29";
+    in-out property <string> settings-poll-interval: "120";
+    in property <string> settings-version: "0.1.0";
+    // Account management in settings
+    in property <[string]> settings-account-names: [];
+    in property <[string]> settings-account-emails: [];
+    in property <[string]> settings-account-hosts: [];
+    in property <int> settings-selected-account-idx: -1;
+    // Edit account mode
+    in property <bool> editing-account: false;
+    in property <string> editing-account-email: "";
+    // Attachment list for message preview
+    in property <[string]> attachment-names: [];
+    in property <[string]> attachment-sizes: [];
+    in property <[int]> attachment-indices: [];
+    // Find-in-message (Ctrl-F)
+    in-out property <bool> show-find-bar: false;
+    in-out property <string> find-query: "";
+    in property <int> find-results: 0;
 
     callback add-account(string, string, string, string, string);
-    callback refresh();
-    callback compose();
-    callback reply();
-    callback open-body-view();
+    callback email-changed(string);
+    callback next-step;
+    callback prev-step;
+    callback start-oauth2-flow;
+    callback select-account(int);
+    callback select-folder(int);
+    callback select-message(int);
+    callback compose;
+    callback compose-submit(string, string, string, string, string); // to, cc, bcc, subject, body
+    callback compose-cancel;
+    callback toggle-bcc;
+    callback schedule-send(string); // hours string, e.g. "1", "2.5"
+    callback toggle-compose-preview;
+    callback toggle-remote-content;
+    callback compose-to-edited(string);
+    callback select-contact-suggestion(int);
+    callback apply-template(string);
+    callback set-priority(int);
     callback search(string);
+    callback open-html-view;
+    callback file-dropped(string);
+    callback compose-body-pasted(string); // mime-type of pasted content, if image
+    callback open-calendar;
+    callback select-calendar-event(int);
+    callback close-calendar;
+    callback open-contacts;
+    callback select-contact(int);
+    callback close-contacts;
+    callback delete-message;
+    callback archive-message;
+    callback flag-message;
+    callback select-next-message;
+    callback select-prev-message;
+    callback show-command-palette;
+    callback search-commands(string);
+    callback execute-command(string);
+    // Settings callbacks
+    callback select-settings-theme(int);
+    callback save-settings;
+    callback close-settings;
+    callback edit-account(int);
+    callback remove-account(int);
+    callback toggle-account-notif-enabled(int);
+    callback toggle-account-notif-subject(int);
+    callback toggle-account-notif-mute(int);
+    // Attachment callbacks
+    callback save-attachment(int); // index into attachment-indices
+    // Find-in-message callbacks
+    callback toggle-find-bar;
+    callback find-in-message(string);
+    callback move-message-to-folder(int, int); // msg-idx, folder-idx
 
-    // ─── Setup Wizard (shown when no accounts) ───
-    if show-setup : Rectangle {
-        background: #1e1e2e;
-        Rectangle {
-            width: 480px;
-            height: 520px;
-            border-radius: 12px;
-            background: #313244;
-            drop-shadow-blur: 20px;
-            drop-shadow-color: #00000080;
+    // Command palette properties
+    in property <bool> show-command-palette-active: false;
+    in-out property <string> command-palette-input: "";
+    in property <[string]> command-palette-results: [];
 
-            VerticalLayout {
-                padding: 32px;
-                spacing: 12px;
-                alignment: start;
+    // Theme-aware colors
+    property <color> bg-primary: root.dark-mode ? #1e1e2e : #eff1f5;
+    property <color> bg-secondary: root.dark-mode ? #181825 : #e6e9ef;
+    property <color> bg-surface: root.dark-mode ? #313244 : #ccd0da;
+    property <color> bg-highlight: root.dark-mode ? #45475a : #bcc0cc;
+    property <color> bg-input: root.dark-mode ? #11111b : #dcdef0;
+    property <color> text-primary: root.dark-mode ? #cdd6f4 : #4c4f69;
+    property <color> text-secondary: root.dark-mode ? #a6adc8 : #6c6f85;
+    property <color> text-muted: root.dark-mode ? #585b70 : #9ca0b0;
+    property <color> text-error: root.dark-mode ? #f38ba8 : #d20f39;
 
-                Text {
-                    text: "Add your email account";
-                    font-size: 22px;
-                    font-weight: 700;
-                    color: #cdd6f4;
+    FocusScope {
+        width: parent.width;
+        height: parent.height;
+
+        key-pressed(event) => {
+            if (event.modifiers.control) {
+                if (event.text == "k") {
+                    root.show-command-palette();
+                } else if (event.text == "n") {
+                    root.compose();
+                } else if (event.text == "f") {
+                    root.toggle-find-bar();
+                } else if (event.text == "v" && root.show-compose) {
+                    root.compose-body-pasted("image/png");
                 }
-                Text {
-                    text: "Kestrel will sync your mail locally.";
-                    font-size: 13px;
-                    color: #a6adc8;
+            } else if (!root.show-compose && !root.show-setup && !root.show-command-palette-active && !root.show-settings) {
+                if (event.text == "r") { root.compose(); }
+                else if (event.text == "d") { root.delete-message(); }
+                else if (event.text == "x") { root.archive-message(); }
+                else if (event.text == "s") { root.flag-message(); }
+                else if (event.text == "j") { root.select-next-message(); }
+                else if (event.text == "k") { root.select-prev-message(); }
+                else if (event.text == Key.Return) { root.open-html-view(); }
+                else if (event.text == Key.Escape) {
+                    if (root.show-compose) { root.compose-cancel(); }
+                    else if (root.show-calendar) { root.close-calendar(); }
+                    else if (root.show-contacts) { root.close-contacts(); }
+                    else if (root.show-settings) { root.close-settings(); }
                 }
-                Rectangle { height: 8px; }
-
-                Text { text: "Display name"; color: #a6adc8; font-size: 12px; }
-                LineEdit {
-                    placeholder-text: "John Doe";
-                    text <=> root.setup-display-name;
+            } else if (root.show-command-palette-active) {
+                if (event.text == Key.Escape) {
+                    root.show-command-palette();
                 }
+            }
+            accept
+        }
 
-                Text { text: "Email address"; color: #a6adc8; font-size: 12px; }
-                LineEdit {
-                    placeholder-text: "you@example.com";
-                    text <=> root.setup-email;
+        VerticalLayout {
+            // Status bar
+            Rectangle {
+                height: 28px;
+                background: root.bg-surface;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 12px;
+                    Text { text: root.status-text; color: root.text-primary; font-size: 12px; vertical-alignment: center; }
+                    Text { text: root.connection-state; color: root.text-secondary; font-size: 11px; vertical-alignment: center; }
+                    Text { horizontal-stretch: 1; }
+                    Text { text: "r:reply d:delete x:archive s:flag j/k:navigate Ctrl+K:commands"; color: #585b70; font-size: 10px; vertical-alignment: center; }
                 }
+            }
 
-                Text { text: "Password"; color: #a6adc8; font-size: 12px; }
-                LineEdit {
-                    placeholder-text: "••••••••";
-                    text <=> root.setup-password;
-                    input-type: password;
+            // Main 3-pane view
+            if !root.show-setup && !root.show-compose && !root.show-settings : Rectangle {
+                vertical-stretch: 1;
+                HorizontalLayout {
+                    spacing: 0px;
+
+                    // Folder pane
+                    Rectangle {
+                        width: root.folder-pane-width;
+                        background: root.bg-secondary;
+                        VerticalLayout {
+                            padding-top: 8px;
+                            padding-bottom: 8px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 2px;
+                            Text { text: "Accounts"; color: root.text-muted; font-size: 11px; font-weight: 700; }
+                            for acct-name[acct-idx] in root.account-names: Rectangle {
+                                height: 24px;
+                                border-radius: 4px;
+                                background: acct-idx == root.selected-account-idx ? root.bg-highlight : transparent;
+                                TouchArea { clicked => { root.select-account(acct-idx); } }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    spacing: 6px;
+                                    Rectangle {
+                                        width: 8px;
+                                        height: 8px;
+                                        border-radius: 4px;
+                                        background: acct-idx < root.account-colors.length ? root.account-colors[acct-idx] : root.text-muted;
+                                    }
+                                    Text { text: acct-name; color: acct-idx == root.selected-account-idx ? root.text-primary : root.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                }
+                            }
+                            Text { text: "Folders"; color: root.text-muted; font-size: 11px; font-weight: 700; }
+                            for name[idx] in root.folder-names: Rectangle {
+                                height: 28px;
+                                border-radius: 4px;
+                                background: idx == root.selected-folder-idx ? root.bg-highlight : (DragState.is-dragging ? root.bg-surface : transparent);
+                                TouchArea {
+                                    clicked => {
+                                        if (DragState.is-dragging && DragState.dragged-msg-idx >= 0) {
+                                            root.move-message-to-folder(DragState.dragged-msg-idx, idx);
+                                            DragState.is-dragging = false;
+                                            DragState.dragged-msg-idx = -1;
+                                        } else {
+                                            root.select-folder(idx);
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 4px;
+                                    Text { text: name; color: idx == root.selected-folder-idx ? root.text-primary : root.text-secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                    if idx < root.folder-unreads.length && root.folder-unreads[idx] > 0 : Text {
+                                        text: root.folder-unreads[idx];
+                                        color: root.text-primary;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Folder pane separator
+                    Rectangle {
+                        width: 4px;
+                        background: folder-sep-touch.has-hover ? #89b4fa : #45475a;
+                        animate background { duration: 150ms; easing: ease-in-out; }
+                        folder-sep-touch := TouchArea {
+                            width: parent.width + 8px;
+                            x: -4px;
+                            moved => {
+                                root.folder-pane-width = Math.max(120px, Math.min(400px, root.folder-pane-width + self.mouse-x));
+                            }
+                        }
+                    }
+
+                    // Message list pane
+                    Rectangle {
+                        width: root.message-pane-width;
+                        background: root.bg-primary;
+                        VerticalLayout {
+                            padding-top: 8px;
+                            padding-bottom: 8px;
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 4px;
+                            searchInput := LineEdit {
+                                placeholder-text: "Search...";
+                                text <=> root.search-query;
+                                accepted(query) => { root.search(query); }
+                            }
+                            Text { text: "Messages (" + root.total-messages + ")"; color: root.text-muted; font-size: 11px; font-weight: 700; }
+                            if root.loading-messages : VerticalLayout {
+                                spacing: 4px;
+                                Rectangle { height: 48px; border-radius: 4px; background: root.bg-highlight; }
+                                Rectangle { height: 48px; border-radius: 4px; background: root.bg-highlight; }
+                                Rectangle { height: 48px; border-radius: 4px; background: root.bg-highlight; }
+                                Rectangle { height: 48px; border-radius: 4px; background: root.bg-highlight; }
+                                Rectangle { height: 48px; border-radius: 4px; background: root.bg-highlight; }
+                            }
+                            if !root.loading-messages : VerticalLayout {
+                                spacing: 4px;
+                                for subject[idx] in root.message-subjects: Rectangle {
+                                    height: 48px;
+                                    border-radius: 4px;
+                                    background: idx == root.selected-msg-idx ? root.bg-highlight : transparent;
+                                    animate background { duration: 100ms; easing: ease-in-out; }
+                                    TouchArea {
+                                        clicked => { root.select-message(idx); }
+                                        pointer-event(ev) => {
+                                            if (ev.kind == PointerEventKind.down) {
+                                                DragState.dragged-msg-idx = idx;
+                                                DragState.is-dragging = true;
+                                            } else if (ev.kind == PointerEventKind.up) {
+                                                DragState.is-dragging = false;
+                                                DragState.dragged-msg-idx = -1;
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        spacing: 8px;
+                                        // Thread indicator (indent for replies)
+                                        Rectangle {
+                                            width: idx < root.thread-depths.length && root.thread-depths[idx] > 0 ? 16px * root.thread-depths[idx] : 0px;
+                                        }
+                                        VerticalLayout {
+                                            padding-top: 4px;
+                                            padding-right: 8px;
+                                            padding-bottom: 4px;
+                                            spacing: 2px;
+                                            horizontal-stretch: 1;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Text { text: idx < root.message-froms.length ? root.message-froms[idx] : ""; color: root.text-primary; font-size: 12px; overflow: elide; }
+                                                Text { text: idx < root.message-dates.length ? root.message-dates[idx] : ""; color: root.text-muted; font-size: 10px; }
+                                            }
+                                            Text { text: subject; color: root.text-secondary; font-size: 11px; overflow: elide; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Message list separator
+                    Rectangle {
+                        width: 4px;
+                        background: msg-sep-touch.has-hover ? #89b4fa : #45475a;
+                        animate background { duration: 150ms; easing: ease-in-out; }
+                        msg-sep-touch := TouchArea {
+                            width: parent.width + 8px;
+                            x: -4px;
+                            moved => {
+                                root.message-pane-width = Math.max(200px, Math.min(600px, root.message-pane-width + self.mouse-x));
+                            }
+                        }
+                    }
+
+                    // Preview pane
+                    Rectangle {
+                        background: root.bg-primary;
+                        VerticalLayout {
+                            padding-top: 16px;
+                            padding-bottom: 16px;
+                            padding-left: 16px;
+                            padding-right: 16px;
+                            spacing: 8px;
+                            if root.loading-preview : VerticalLayout {
+                                spacing: 8px;
+                                Rectangle { height: 20px; width: 200px; border-radius: 4px; background: root.bg-highlight; }
+                                Rectangle { height: 16px; width: 300px; border-radius: 4px; background: root.bg-highlight; }
+                                Rectangle { vertical-stretch: 1; border-radius: 4px; background: root.bg-highlight; }
+                            }
+                            if root.selected-msg-idx >= 0 && !root.loading-preview : VerticalLayout {
+                                spacing: 8px;
+                                // Find bar (Ctrl-F)
+                                if root.show-find-bar : HorizontalLayout {
+                                    spacing: 8px;
+                                    height: 32px;
+                                    find-input := LineEdit {
+                                        placeholder-text: "Find in message...";
+                                        text <=> root.find-query;
+                                        accepted(query) => { root.find-in-message(query); }
+                                        edited(query) => { root.find-in-message(query); }
+                                    }
+                                    Text { text: root.find-results > 0 ? root.find-results + " matches" : "No matches"; color: root.text-muted; font-size: 11px; vertical-alignment: center; }
+                                    Button { text: "Close"; clicked => { root.toggle-find-bar(); } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: root.preview-from; color: root.text-primary; font-size: 14px; font-weight: 600; horizontal-stretch: 1; }
+                                    if root.preview-is-html : Button { text: "Open HTML"; clicked => { root.open-html-view(); } }
+                                    if root.remote-blocked-count > 0 : Button { text: "Show Images (" + root.remote-blocked-count + ")"; clicked => { root.toggle-remote-content(); } }
+                                }
+                                Text { text: root.preview-subject; color: root.text-secondary; font-size: 12px; }
+                                Rectangle {
+                                    vertical-stretch: 1;
+                                    background: root.bg-input;
+                                    border-radius: 6px;
+                                    Flickable {
+                                        viewport-height: self.preferred-height;
+                                        Text { text: root.preview-body; color: root.text-primary; font-size: 12px; wrap: word-wrap; width: parent.width; }
+                                    }
+                                }
+                                // Attachment list
+                                if root.attachment-names.length > 0 : VerticalLayout {
+                                    spacing: 4px;
+                                    Text { text: "Attachments (" + root.attachment-names.length + ")"; color: root.text-muted; font-size: 11px; font-weight: 700; }
+                                    for att-name[att-idx] in root.attachment-names : HorizontalLayout {
+                                        spacing: 8px;
+                                        height: 28px;
+                                        Text {
+                                            text: att-name + (att-idx < root.attachment-sizes.length ? " (" + root.attachment-sizes[att-idx] + ")" : "");
+                                            color: root.text-secondary;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+                                        Button {
+                                            text: "Save";
+                                            clicked => { root.save-attachment(att-idx); }
+                                        }
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Button { text: "Reply"; clicked => { root.compose(); } }
+                                    Button { text: "Delete"; clicked => { root.delete-message(); } }
+                                    Button { text: "Archive"; clicked => { root.archive-message(); } }
+                                    Button { text: "Flag"; clicked => { root.flag-message(); } }
+                                }
+                            }
+                            if root.selected-msg-idx < 0 && !root.loading-preview : VerticalLayout {
+                                alignment: center;
+                                spacing: 12px;
+                                Text { text: "No message selected"; color: #585b70; font-size: 18px; font-weight: 600; horizontal-alignment: center; }
+                                Text { text: "Select a message from the list to view its contents"; color: #6c7086; font-size: 13px; horizontal-alignment: center; }
+                                Button { text: "Compose New Message"; clicked => { root.compose(); } }
+                            }
+                        }
+                    }
                 }
+            }
 
-                Rectangle { height: 8px; }
-
-                Text { text: "IMAP server (incoming)"; color: #a6adc8; font-size: 12px; }
-                LineEdit {
-                    placeholder-text: "imap.example.com:993";
-                    text <=> root.setup-imap-host;
+            // Compose overlay
+            if root.show-compose : Rectangle {
+                vertical-stretch: 1;
+                opacity: root.show-compose ? 1.0 : 0.0;
+                animate opacity { duration: 150ms; easing: ease-out; }
+                Rectangle {
+                    width: 600px;
+                    height: 500px;
+                    border-radius: 12px;
+                    background: root.bg-surface;
+                    VerticalLayout {
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        spacing: 12px;
+                        Text { text: "Compose"; font-size: 18px; font-weight: 700; color: root.text-primary; }
+                        // Template selector
+                        if root.template-names.length > 0 : HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Template:"; color: root.text-secondary; font-size: 12px; vertical-alignment: center; }
+                            for tmpl-name[tmpl-idx] in root.template-names : Rectangle {
+                                height: 24px;
+                                border-radius: 4px;
+                                background: tmpl-name == root.selected-template ? root.bg-highlight : transparent;
+                                TouchArea { clicked => { root.apply-template(tmpl-name); } }
+                                Text { x: 8px; text: tmpl-name; color: root.text-primary; font-size: 11px; vertical-alignment: center; }
+                            }
+                        }
+                        Text { text: "From:"; color: root.text-secondary; font-size: 12px; }
+                        LineEdit { text <=> root.compose-from; placeholder-text: "account@example.com (leave empty for default)"; }
+                        Text { text: "To:"; color: root.text-secondary; font-size: 12px; }
+                        LineEdit { text <=> root.compose-to; placeholder-text: "recipient@example.com"; edited(text) => { root.compose-to-edited(text); } }
+                        // Contact autocomplete dropdown
+                        if root.show-contact-suggestions && root.contact-suggestions.length > 0 : Rectangle {
+                            height: Math.min(root.contact-suggestions.length * 28px, 140px);
+                            background: root.bg-surface;
+                            border-radius: 4px;
+                            border-width: 1px;
+                            border-color: root.text-muted;
+                            ListView {
+                                for suggestion[sugg-idx] in root.contact-suggestions : Rectangle {
+                                    height: 28px;
+                                    border-radius: 4px;
+                                    background: sugg-ta.has-hover ? root.bg-highlight : transparent;
+                                    sugg-ta := TouchArea {
+                                        clicked => { root.select-contact-suggestion(sugg-idx); }
+                                    }
+                                    Text { x: 8px; text: suggestion; color: root.text-primary; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                                }
+                            }
+                        }
+                        Text { text: "Cc:"; color: root.text-secondary; font-size: 12px; }
+                        LineEdit { text <=> root.compose-cc; placeholder-text: "optional"; }
+                        if root.show-bcc : VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Bcc:"; color: root.text-secondary; font-size: 12px; }
+                            LineEdit { text <=> root.compose-bcc; placeholder-text: "optional (hidden from recipients)"; }
+                        }
+                        if !root.show-bcc : Button { text: "Show Bcc"; clicked => { root.toggle-bcc(); } }
+                        Text { text: "Subject:"; color: root.text-secondary; font-size: 12px; }
+                        LineEdit { text <=> root.compose-subject; }
+                        HorizontalLayout {
+                            spacing: 16px;
+                            CheckBox { text: "Sign with OpenPGP"; checked <=> root.compose-pgp-sign; }
+                            CheckBox { text: "Encrypt with OpenPGP"; checked <=> root.compose-pgp-encrypt; }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Priority:"; color: root.text-secondary; font-size: 12px; vertical-alignment: center; }
+                            Rectangle {
+                                height: 24px;
+                                border-radius: 4px;
+                                background: root.compose-priority-idx == 0 ? root.bg-highlight : transparent;
+                                TouchArea { clicked => { root.set-priority(0); } }
+                                Text { x: 8px; text: "High"; color: root.text-primary; font-size: 11px; vertical-alignment: center; }
+                            }
+                            Rectangle {
+                                height: 24px;
+                                border-radius: 4px;
+                                background: root.compose-priority-idx == 1 ? root.bg-highlight : transparent;
+                                TouchArea { clicked => { root.set-priority(1); } }
+                                Text { x: 8px; text: "Normal"; color: root.text-primary; font-size: 11px; vertical-alignment: center; }
+                            }
+                            Rectangle {
+                                height: 24px;
+                                border-radius: 4px;
+                                background: root.compose-priority-idx == 2 ? root.bg-highlight : transparent;
+                                TouchArea { clicked => { root.set-priority(2); } }
+                                Text { x: 8px; text: "Low"; color: root.text-primary; font-size: 11px; vertical-alignment: center; }
+                            }
+                        }
+                        Text { text: "Body (Markdown):"; color: root.text-secondary; font-size: 12px; }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            background: root.bg-input;
+                            border-radius: 6px;
+                            if !root.compose-preview-mode :
+                                LineEdit { text <=> root.compose-body; width: parent.width; height: parent.height; }
+                            if root.compose-preview-mode : Flickable {
+                                viewport-height: self.preferred-height;
+                                Text {
+                                    text: root.compose-body;
+                                    color: root.text-primary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                    width: parent.width;
+                                }
+                            }
+                        }
+                        // Drop zone for attachments (C12)
+                        Rectangle {
+                            height: 48px;
+                            background: root.bg-input;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: root.text-muted;
+                            drop-area := DropArea {
+                                can-drop(event) => { DropApi.can-drop(event.data); }
+                                dropped(event) => {
+                                    root.file-dropped(DropApi.transfer-to-string(event.data));
+                                    return DragAction.copy;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                if root.compose-attachment-names == "" :
+                                    Text { text: "Drop files here to attach"; color: root.text-muted; font-size: 11px; horizontal-alignment: center; }
+                                if root.compose-attachment-names != "" :
+                                    Text { text: root.compose-attachment-names; color: root.text-secondary; font-size: 11px; horizontal-alignment: center; overflow: elide; }
+                            }
+                        }
+                        if root.compose-error != "" : Text { text: root.compose-error; color: root.text-error; font-size: 12px; }
+                        if root.show-schedule-input : VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Schedule send (hours from now):"; color: root.text-secondary; font-size: 12px; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                schedule-hours-input := LineEdit { placeholder-text: "e.g. 1, 2.5, 24"; }
+                                Button { text: "Set"; clicked => { root.schedule-send(schedule-hours-input.text); } }
+                                Button { text: "Cancel Schedule"; clicked => { root.compose-send-after = 0; root.show-schedule-input = false; } }
+                            }
+                        }
+                        if root.compose-send-after > 0 : Text { text: "Scheduled: send after " + root.compose-send-after; color: root.dark-mode ? #a6e3a1 : #40a02b; font-size: 11px; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: end;
+                            Button { text: "Cancel"; clicked => { root.compose-cancel(); } }
+                            Button { text: root.compose-preview-mode ? "Edit" : "Preview"; clicked => { root.toggle-compose-preview(); } }
+                            Button { text: "Send"; enabled: !root.compose-busy && root.compose-to != "" && root.compose-subject != ""; clicked => { root.compose-submit(root.compose-to, root.compose-cc, root.compose-bcc, root.compose-subject, root.compose-body); } }
+                        }
+                    }
                 }
+            }
 
-                Text { text: "SMTP server (outgoing)"; color: #a6adc8; font-size: 12px; }
-                LineEdit {
-                    placeholder-text: "smtp.example.com:587";
-                    text <=> root.setup-smtp-host;
+            // Calendar overlay
+            if root.show-calendar : Rectangle {
+                vertical-stretch: 1;
+                opacity: root.show-calendar ? 1.0 : 0.0;
+                animate opacity { duration: 150ms; easing: ease-out; }
+                Rectangle {
+                    width: 700px;
+                    height: 500px;
+                    border-radius: 12px;
+                    background: root.bg-surface;
+                    VerticalLayout {
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        spacing: 12px;
+                        Text { text: "Calendar"; font-size: 18px; font-weight: 700; color: root.text-primary; }
+                        if root.calendar-event-summaries.length > 0 : ListView {
+                            vertical-stretch: 1;
+                            for event-idx[event-i] in root.calendar-event-summaries : Rectangle {
+                                height: 40px;
+                                border-radius: 4px;
+                                background: event-i == root.selected-calendar-idx ? root.bg-highlight : transparent;
+                                TouchArea { clicked => { root.select-calendar-event(event-i); } }
+                                Text { x: 8px; text: event-idx; color: root.text-primary; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                            }
+                        }
+                        if root.calendar-event-summaries.length == 0 : Text { text: "No events"; color: root.text-muted; font-size: 14px; horizontal-alignment: center; }
+                        if root.calendar-event-title != "" : Rectangle {
+                            vertical-stretch: 1;
+                            background: root.bg-input;
+                            border-radius: 6px;
+                            VerticalLayout {
+                                padding-top: 12px;
+                                padding-bottom: 12px;
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 6px;
+                                Text { text: root.calendar-event-title; color: root.text-primary; font-size: 14px; font-weight: 600; }
+                                if root.calendar-event-start != "" : HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: "Start:"; color: root.text-muted; font-size: 11px; font-weight: 600; }
+                                    Text { text: root.calendar-event-start; color: root.text-secondary; font-size: 11px; }
+                                }
+                                if root.calendar-event-end != "" : HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: "End:"; color: root.text-muted; font-size: 11px; font-weight: 600; }
+                                    Text { text: root.calendar-event-end; color: root.text-secondary; font-size: 11px; }
+                                }
+                                if root.calendar-event-location != "" : HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: "Location:"; color: root.text-muted; font-size: 11px; font-weight: 600; }
+                                    Text { text: root.calendar-event-location; color: root.text-secondary; font-size: 11px; }
+                                }
+                                if root.calendar-event-description != "" : VerticalLayout {
+                                    spacing: 4px;
+                                    Text { text: "Description:"; color: root.text-muted; font-size: 11px; font-weight: 600; }
+                                    Text { text: root.calendar-event-description; color: root.text-secondary; font-size: 11px; wrap: word-wrap; }
+                                }
+                            }
+                        }
+                        if root.calendar-event-title == "" && root.calendar-event-detail != "" : Rectangle {
+                            height: 60px;
+                            background: root.bg-input;
+                            border-radius: 6px;
+                            Text { text: root.calendar-event-detail; color: root.text-primary; font-size: 12px; wrap: word-wrap; x: 8px; }
+                        }
+                        Button { text: "Close"; clicked => { root.close-calendar(); } }
+                    }
                 }
+            }
 
-                // Error message
-                if root.setup-error != "" : Text {
-                    text: root.setup-error;
-                    color: #f38ba8;
-                    font-size: 12px;
-                    wrap: word-wrap;
+            // Contacts overlay
+            if root.show-contacts : Rectangle {
+                vertical-stretch: 1;
+                opacity: root.show-contacts ? 1.0 : 0.0;
+                animate opacity { duration: 150ms; easing: ease-out; }
+                Rectangle {
+                    width: 600px;
+                    height: 400px;
+                    border-radius: 12px;
+                    background: root.bg-surface;
+                    VerticalLayout {
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        spacing: 12px;
+                        Text { text: "Contacts"; font-size: 18px; font-weight: 700; color: root.text-primary; }
+                        if root.contact-names.length > 0 : ListView {
+                            vertical-stretch: 1;
+                            for contact-name[contact-i] in root.contact-names : Rectangle {
+                                height: 36px;
+                                border-radius: 4px;
+                                background: contact-i == root.selected-contact-idx ? root.bg-highlight : transparent;
+                                TouchArea { clicked => { root.select-contact(contact-i); } }
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 12px;
+                                    Text { text: contact-name; color: root.text-primary; font-size: 12px; vertical-alignment: center; }
+                                    Text { text: contact-i < root.contact-emails.length ? root.contact-emails[contact-i] : ""; color: root.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                        if root.contact-names.length == 0 : Text { text: "No contacts"; color: root.text-muted; font-size: 14px; horizontal-alignment: center; }
+                        Button { text: "Close"; clicked => { root.close-contacts(); } }
+                    }
                 }
+            }
 
-                Rectangle { height: 4px; }
+            // Setup wizard (multi-step)
+            if root.show-setup : Rectangle {
+                vertical-stretch: 1;
+                opacity: root.show-setup ? 1.0 : 0.0;
+                animate opacity { duration: 150ms; easing: ease-out; }
+                Rectangle {
+                    width: 520px;
+                    height: 520px;
+                    border-radius: 12px;
+                    background: root.bg-surface;
+                    VerticalLayout {
+                        padding-top: 28px;
+                        padding-bottom: 28px;
+                        padding-left: 28px;
+                        padding-right: 28px;
+                        spacing: 10px;
+                        alignment: start;
+                        // Step indicator
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: center;
+                            Rectangle { width: 24px; height: 24px; border-radius: 12px; background: root.setup-step >= 1 ? (root.dark-mode ? #89b4fa : #1e66f5) : root.bg-highlight; }
+                            Rectangle { width: 40px; height: 2px; background: root.setup-step >= 2 ? (root.dark-mode ? #89b4fa : #1e66f5) : root.bg-highlight; }
+                            Rectangle { width: 24px; height: 24px; border-radius: 12px; background: root.setup-step >= 2 ? (root.dark-mode ? #89b4fa : #1e66f5) : root.bg-highlight; }
+                            Rectangle { width: 40px; height: 2px; background: root.setup-step >= 3 ? (root.dark-mode ? #89b4fa : #1e66f5) : root.bg-highlight; }
+                            Rectangle { width: 24px; height: 24px; border-radius: 12px; background: root.setup-step >= 3 ? (root.dark-mode ? #89b4fa : #1e66f5) : root.bg-highlight; }
+                            Rectangle { width: 40px; height: 2px; background: root.setup-step >= 4 ? (root.dark-mode ? #89b4fa : #1e66f5) : root.bg-highlight; }
+                            Rectangle { width: 24px; height: 24px; border-radius: 12px; background: root.setup-step >= 4 ? (root.dark-mode ? #89b4fa : #1e66f5) : root.bg-highlight; }
+                        }
+                        // Step 1: Email
+                        if root.setup-step == 1 : VerticalLayout {
+                            spacing: 8px;
+                            Text { text: root.editing-account ? "Edit your email" : "Add your email"; font-size: 20px; font-weight: 700; color: root.text-primary; }
+                            Text { text: "Email"; color: root.text-secondary; font-size: 12px; }
+                            LineEdit { text <=> root.setup-email; placeholder-text: "you@gmail.com"; edited(text) => { root.email-changed(text); } }
+                            if root.setup-provider-name != "" : Text { text: "Detected: " + root.setup-provider-name; color: root.dark-mode ? #a6e3a1 : #40a02b; font-size: 12px; }
+                            if root.provider-help != "" : Text { text: root.provider-help; color: root.dark-mode ? #f9e2af : #df8e1d; font-size: 11px; wrap: word-wrap; }
+                            Rectangle { vertical-stretch: 1; }
+                            HorizontalLayout {
+                                alignment: end;
+                                Button { text: "Next"; enabled: root.setup-email-valid; clicked => { root.next-step(); } }
+                            }
+                        }
+                        // Step 2: Password (or OAuth2 button)
+                        if root.setup-step == 2 : VerticalLayout {
+                            spacing: 8px;
+                            Text { text: "Sign in to " + root.setup-provider-name; font-size: 20px; font-weight: 700; color: root.text-primary; }
+                            Text { text: root.setup-email; color: root.text-secondary; font-size: 12px; }
+                            if root.setup-is-oauth2 : VerticalLayout {
+                                spacing: 8px;
+                                Text { text: "This provider supports sign-in with your browser."; color: root.text-secondary; font-size: 12px; wrap: word-wrap; }
+                                Button { text: root.setup-oauth2-button-label != "" ? root.setup-oauth2-button-label : "Sign in with provider"; clicked => { root.start-oauth2-flow(); } }
+                                Text { text: "Or enter a password manually:"; color: root.text-muted; font-size: 11px; }
+                            }
+                            if !root.setup-is-oauth2 : Text { text: "Password"; color: root.text-secondary; font-size: 12px; }
+                            LineEdit { text <=> root.setup-password; input-type: password; }
+                            if root.setup-error != "" : Text { text: root.setup-error; color: root.text-error; font-size: 12px; }
+                            Rectangle { vertical-stretch: 1; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: end;
+                                Button { text: "Back"; clicked => { root.prev-step(); } }
+                                Button { text: "Next"; enabled: root.setup-password != "" || root.setup-is-oauth2; clicked => { root.next-step(); } }
+                            }
+                        }
+                        // Step 3: Review
+                        if root.setup-step == 3 : VerticalLayout {
+                            spacing: 8px;
+                            Text { text: "Review your settings"; font-size: 20px; font-weight: 700; color: root.text-primary; }
+                            Text { text: "Provider: " + root.setup-provider-name; color: root.text-primary; font-size: 12px; }
+                            Text { text: "Email: " + root.setup-email; color: root.text-primary; font-size: 12px; }
+                            if root.setup-detected-hosts != "" : Text { text: root.setup-detected-hosts; color: root.text-secondary; font-size: 12px; wrap: word-wrap; }
+                            Text { text: "IMAP server"; color: root.text-secondary; font-size: 12px; }
+                            LineEdit { placeholder-text: "imap.gmail.com:993"; text <=> root.setup-imap-host; }
+                            Text { text: "SMTP server"; color: root.text-secondary; font-size: 12px; }
+                            LineEdit { placeholder-text: "smtp.gmail.com:465"; text <=> root.setup-smtp-host; }
+                            if root.setup-error != "" : Text { text: root.setup-error; color: root.text-error; font-size: 12px; }
+                            Rectangle { vertical-stretch: 1; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: end;
+                                Button { text: "Back"; clicked => { root.prev-step(); } }
+                                Button { text: root.editing-account ? "Update Account" : "Add Account"; enabled: !root.setup-busy; clicked => { root.add-account("", root.setup-email, root.setup-password, root.setup-imap-host, root.setup-smtp-host); } }
+                            }
+                        }
+                        // Step 4: Testing connection
+                        if root.setup-step == 4 : VerticalLayout {
+                            spacing: 12px;
+                            alignment: center;
+                            Text { text: "Testing connection..."; font-size: 18px; font-weight: 700; color: root.text-primary; horizontal-alignment: center; }
+                            if root.setup-testing-status != "" : Text { text: root.setup-testing-status; color: root.text-secondary; font-size: 12px; horizontal-alignment: center; }
+                            if root.setup-error != "" : VerticalLayout {
+                                spacing: 8px;
+                                Text { text: root.setup-error; color: root.text-error; font-size: 13px; horizontal-alignment: center; }
+                                Button { text: "Back"; clicked => { root.prev-step(); } }
+                            }
+                        }
+                    }
+                }
+            }
 
-                Button {
-                    text: root.setup-busy ? "Connecting…" : "Add Account";
-                    enabled: !root.setup-busy && root.setup-email != "" && root.setup-password != "" && root.setup-imap-host != "";
-                    clicked => {
-                        root.add-account(
-                            root.setup-display-name,
-                            root.setup-email,
-                            root.setup-password,
-                            root.setup-imap-host,
-                            root.setup-smtp-host
-                        );
+            // Settings overlay
+            if root.show-settings : Rectangle {
+                vertical-stretch: 1;
+                opacity: root.show-settings ? 1.0 : 0.0;
+                animate opacity { duration: 150ms; easing: ease-out; }
+                Rectangle {
+                    width: 640px;
+                    height: 600px;
+                    border-radius: 12px;
+                    background: root.bg-surface;
+                    VerticalLayout {
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        spacing: 12px;
+                        // Header
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Settings"; font-size: 18px; font-weight: 700; color: root.text-primary; horizontal-stretch: 1; }
+                            Button { text: "Close"; clicked => { root.close-settings(); } }
+                        }
+                        Rectangle { height: 1px; background: root.bg-highlight; }
+                        // Appearance section
+                        Text { text: "Appearance"; font-size: 14px; font-weight: 700; color: root.text-primary; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Theme:"; color: root.text-secondary; font-size: 12px; vertical-alignment: center; width: 120px; }
+                            ComboBox {
+                                model: root.settings-theme-options;
+                                current-index <=> root.settings-theme-idx;
+                                selected(val) => { root.select-settings-theme(root.settings-theme-idx); }
+                            }
+                        }
+                        Rectangle { height: 1px; background: root.bg-highlight; }
+                        // Compose section
+                        Text { text: "Compose"; font-size: 14px; font-weight: 700; color: root.text-primary; }
+                        Text { text: "Default Signature:"; color: root.text-secondary; font-size: 12px; }
+                        Rectangle {
+                            height: 60px;
+                            background: root.bg-input;
+                            border-radius: 6px;
+                            LineEdit { text <=> root.settings-signature; width: parent.width; height: parent.height; placeholder-text: "-- Best regards"; }
+                        }
+                        if root.settings-template-names.length > 0 : HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Template:"; color: root.text-secondary; font-size: 12px; vertical-alignment: center; }
+                            for tmpl-name[tmpl-idx] in root.settings-template-names : Rectangle {
+                                height: 24px;
+                                border-radius: 4px;
+                                background: tmpl-name == root.settings-selected-template ? root.bg-highlight : transparent;
+                                TouchArea { clicked => { root.settings-selected-template = tmpl-name; } }
+                                Text { x: 8px; text: tmpl-name; color: root.text-primary; font-size: 11px; vertical-alignment: center; }
+                            }
+                        }
+                        Rectangle { height: 1px; background: root.bg-highlight; }
+                        // Notifications section
+                        Text { text: "Notifications"; font-size: 14px; font-weight: 700; color: root.text-primary; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            CheckBox { text: "Enable notifications"; checked <=> root.settings-notifications-enabled; }
+                            CheckBox { text: "Show subject in notification"; checked <=> root.settings-notifications-show-subject; }
+                        }
+                        if root.settings-account-names.length > 0 : VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Per-account overrides"; color: root.text-muted; font-size: 11px; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                padding-left: 148px;
+                                Text { text: "enabled"; color: root.text-muted; font-size: 9px; width: 80px; horizontal-alignment: center; }
+                                Text { text: "subject"; color: root.text-muted; font-size: 9px; width: 80px; horizontal-alignment: center; }
+                                Text { text: "mute"; color: root.text-muted; font-size: 9px; width: 80px; horizontal-alignment: center; }
+                            }
+                            for acct-name[acct-ni] in root.settings-account-names : HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: acct-name; color: root.text-secondary; font-size: 11px; vertical-alignment: center; width: 140px; overflow: elide; }
+                                if acct-ni < root.settings-account-notifications-enabled.length : Rectangle {
+                                    height: 24px;
+                                    border-radius: 4px;
+                                    background: root.bg-input;
+                                    horizontal-stretch: 0;
+                                    width: 80px;
+                                    TouchArea { clicked => { root.toggle-account-notif-enabled(acct-ni); } }
+                                    Text { x: 8px; text: root.settings-account-notifications-enabled[acct-ni] ? "on" : "off"; color: root.settings-account-notifications-enabled[acct-ni] ? (root.dark-mode ? #a6e3a1 : #40a02b) : root.text-muted; font-size: 11px; vertical-alignment: center; }
+                                }
+                                if acct-ni < root.settings-account-notifications-show-subject.length : Rectangle {
+                                    height: 24px;
+                                    border-radius: 4px;
+                                    background: root.bg-input;
+                                    horizontal-stretch: 0;
+                                    width: 80px;
+                                    TouchArea { clicked => { root.toggle-account-notif-subject(acct-ni); } }
+                                    Text { x: 8px; text: root.settings-account-notifications-show-subject[acct-ni] ? "on" : "off"; color: root.settings-account-notifications-show-subject[acct-ni] ? (root.dark-mode ? #a6e3a1 : #40a02b) : root.text-muted; font-size: 11px; vertical-alignment: center; }
+                                }
+                                if acct-ni < root.settings-account-notifications-mute.length : Rectangle {
+                                    height: 24px;
+                                    border-radius: 4px;
+                                    background: root.bg-input;
+                                    horizontal-stretch: 0;
+                                    width: 80px;
+                                    TouchArea { clicked => { root.toggle-account-notif-mute(acct-ni); } }
+                                    Text { x: 8px; text: root.settings-account-notifications-mute[acct-ni] ? "on" : "off"; color: root.settings-account-notifications-mute[acct-ni] ? (root.dark-mode ? #f38ba8 : #d20f39) : root.text-muted; font-size: 11px; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: root.bg-highlight; }
+                        // Sync section
+                        Text { text: "Sync"; font-size: 14px; font-weight: 700; color: root.text-primary; }
+                        HorizontalLayout {
+                            spacing: 16px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "Idle timeout (min):"; color: root.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                LineEdit { text <=> root.settings-idle-timeout; width: 60px; }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "Poll interval (sec):"; color: root.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                LineEdit { text <=> root.settings-poll-interval; width: 60px; }
+                            }
+                        }
+                        Rectangle { height: 1px; background: root.bg-highlight; }
+                        // Accounts section
+                        Text { text: "Accounts"; font-size: 14px; font-weight: 700; color: root.text-primary; }
+                        if root.settings-account-names.length > 0 : ListView {
+                            vertical-stretch: 1;
+                            for acct-idx[acct-i] in root.settings-account-names : Rectangle {
+                                height: 40px;
+                                border-radius: 4px;
+                                background: acct-i == root.settings-selected-account-idx ? root.bg-highlight : transparent;
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        Text { text: acct-idx; color: root.text-primary; font-size: 12px; vertical-alignment: center; }
+                                        if acct-i < root.settings-account-emails.length : Text { text: root.settings-account-emails[acct-i]; color: root.text-secondary; font-size: 10px; overflow: elide; }
+                                    }
+                                    if acct-i < root.settings-account-hosts.length : Text { text: root.settings-account-hosts[acct-i]; color: root.text-muted; font-size: 10px; vertical-alignment: center; }
+                                    Button { text: "Edit"; clicked => { root.edit-account(acct-i); } }
+                                    Button { text: "Remove"; clicked => { root.remove-account(acct-i); } }
+                                }
+                            }
+                        }
+                        if root.settings-account-names.length == 0 : Text { text: "No accounts configured"; color: root.text-muted; font-size: 12px; horizontal-alignment: center; }
+                        Rectangle { height: 1px; background: root.bg-highlight; }
+                        // About section
+                        Text { text: "About"; font-size: 14px; font-weight: 700; color: root.text-primary; }
+                        Text { text: "Kestrel v" + root.settings-version; color: root.text-secondary; font-size: 12px; }
+                        Text { text: "Privacy-focused email client"; color: root.text-muted; font-size: 11px; }
+                        // Save button
+                        HorizontalLayout {
+                            alignment: end;
+                            Button { text: "Save Settings"; clicked => { root.save-settings(); } }
+                        }
                     }
                 }
             }
         }
     }
 
-    // ─── Main UI (shown when accounts exist) ───
-    if !show-setup : HorizontalLayout {
-        // Folder pane
-        VerticalLayout {
-            min-width: 200px;
-            max-width: 250px;
-            padding: 8px;
-            Rectangle {
-                background: #1e1e2e;
-                border-radius: 8px;
-                VerticalLayout {
-                    padding: 8px;
-                    Text {
-                        text: "Folders (" + root.folder-count + ")";
-                        font-size: 14px;
-                        font-weight: 700;
-                        color: #cdd6f4;
-                    }
-                    Rectangle { height: 1px; background: #45475a; }
-                    // Folder list
-                    for folder-name in root.folder-names : Text {
-                        text: folder-name;
-                        font-size: 13px;
-                        color: #a6adc8;
-                    }
-                }
-            }
-        }
-
-        // Message list pane
-        VerticalLayout {
-            min-width: 350px;
-            padding: 8px;
-            spacing: 8px;
-            HorizontalLayout {
-                spacing: 8px;
-                LineEdit {
-                    placeholder-text: "Search…";
-                    width: 200px;
-                    edited(text) => { root.search(text); }
-                }
-                Button { text: "Compose"; clicked => { root.compose(); } }
-                Button { text: "Reply"; clicked => { root.reply(); } }
-            }
-            Rectangle {
-                background: #181825;
-                border-radius: 8px;
-                Text {
-                    text: root.message-count + " messages";
-                    font-size: 12px;
-                    color: #6c7086;
-                }
-            }
-        }
-
-        // Preview pane
-        VerticalLayout {
-            min-width: 300px;
-            padding: 12px;
-            Text {
-                text: root.selected-subject;
-                font-size: 16px;
-                font-weight: 700;
-                color: #cdd6f4;
-            }
-            Text {
-                text: "From: " + root.selected-from;
-                font-size: 13px;
-                color: #a6adc8;
-            }
-            Rectangle { height: 1px; background: #45475a; }
-            Button {
-                text: "Open HTML view (sandboxed)";
-                clicked => { root.open-body-view(); }
-            }
-        }
-    }
-
-    // ─── Status bar ───
-    Rectangle {
-        height: 26px;
-        background: #313244;
+    // Toast notification overlay (direct child of Window for absolute positioning)
+    if root.show-toast : Rectangle {
+        x: (root.width - 400px) / 2;
+        y: root.height - 60px;
+        width: 400px;
+        height: 40px;
+        border-radius: 8px;
+        background: root.toast-type == "error" ? #f38ba8 : root.toast-type == "success" ? #a6e3a1 : #89b4fa;
         Text {
-            text: root.status-text + "  │  " + root.connection-state;
-            font-size: 12px;
-            color: #a6adc8;
+            text: root.toast-message;
+            color: #1e1e2e;
+            font-size: 13px;
+            font-weight: 500;
+            horizontal-alignment: center;
             vertical-alignment: center;
+        }
+    }
+
+    // Command palette overlay (direct child of Window for absolute positioning)
+    if root.show-command-palette-active : Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        background: #00000099;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 500px;
+                border-radius: 8px;
+                background: root.bg-surface;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    LineEdit {
+                        placeholder-text: "Type a command...";
+                        text <=> root.command-palette-input;
+                        accepted(query) => { root.search-commands(query); }
+                    }
+                    for result in root.command-palette-results : Rectangle {
+                        height: 36px;
+                        border-radius: 4px;
+                        background: ta.has-hover ? root.bg-highlight : transparent;
+                        ta := TouchArea { clicked => { root.execute-command(result); } }
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            Text { text: result; color: root.text-primary; font-size: 13px; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -12,9 +12,10 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use kestrel_core::secrets::SecretString;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use tracing::instrument;
 
 use crate::{
-    credentials::{CredentialService, CredentialStore},
+    credentials::CredentialService,
     error::{CryptoError, CryptoResult},
 };
 
@@ -58,6 +59,17 @@ impl OAuthProvider {
                 "https://outlook.office.com/SMTP.Send".into(),
                 "offline_access".into(),
             ],
+            client_id: client_id.to_owned(),
+        }
+    }
+
+    /// Yahoo/AOL preset.
+    #[must_use]
+    pub fn yahoo(client_id: &str) -> Self {
+        Self {
+            auth_url: "https://api.login.yahoo.com/oauth2/request_auth".into(),
+            token_url: "https://api.login.yahoo.com/oauth2/get_token".into(),
+            scopes: vec!["mail-w".into()],
             client_id: client_id.to_owned(),
         }
     }
@@ -203,6 +215,8 @@ pub struct AuthorizationFlow {
 ///
 /// # Errors
 /// [`CryptoError::OAuth`] on loopback bind failure.
+#[instrument(skip_all)]
+#[allow(clippy::type_complexity)]
 pub async fn start_flow(
     provider: OAuthProvider,
     login_hint: Option<String>,
@@ -316,6 +330,7 @@ async fn capture_on(
 ///
 /// # Errors
 /// [`CryptoError::OAuth`] on HTTP/protocol failure.
+#[instrument(skip_all)]
 pub async fn exchange_code(
     http: &reqwest::Client,
     provider: &OAuthProvider,
@@ -344,6 +359,7 @@ pub async fn exchange_code(
 ///
 /// # Errors
 /// [`CryptoError::OAuth`] when the refresh is rejected (revoked/expired).
+#[instrument(skip_all)]
 pub async fn refresh(
     http: &reqwest::Client,
     provider: &OAuthProvider,
@@ -359,6 +375,25 @@ pub async fn refresh(
         form.push(("client_secret", secret.expose().to_owned()));
     }
     token_request(http, &provider.token_url, &form).await
+}
+
+/// Refreshes an access token using string parameters (simpler API than [`refresh`]).
+///
+/// # Errors
+/// [`CryptoError::OAuth`] when the refresh is rejected (revoked/expired).
+#[instrument(skip_all)]
+pub async fn refresh_access_token(
+    http: &reqwest::Client,
+    token_endpoint: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> CryptoResult<TokenResponse> {
+    let form = vec![
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", refresh_token.to_owned()),
+        ("client_id", client_id.to_owned()),
+    ];
+    token_request_raw(http, token_endpoint, &form).await
 }
 
 async fn token_request(
@@ -384,12 +419,37 @@ async fn token_request(
     }
     let parsed: TokenResponse =
         serde_json::from_str(&text).map_err(|e| CryptoError::OAuth(format!("token JSON: {e}")))?;
-    let expires_at = now_unix_ms() + parsed.expires_in.unwrap_or(3600) * 1000;
+    let expires_at = now_unix_ms() + parsed.expires_in.unwrap_or(3600).cast_signed() * 1000;
     Ok(TokenSet {
         access_token: SecretString::new(parsed.access_token),
         refresh_token: parsed.refresh_token.map(SecretString::new),
         expires_at,
     })
+}
+
+/// Posts a token request and returns the raw [`TokenResponse`].
+async fn token_request_raw(
+    http: &reqwest::Client,
+    url: &str,
+    form: &[(&str, String)],
+) -> CryptoResult<TokenResponse> {
+    let response = http
+        .post(url)
+        .form(form)
+        .send()
+        .await
+        .map_err(|e| CryptoError::OAuth(format!("token endpoint: {e}")))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| CryptoError::OAuth(format!("token body: {e}")))?;
+    if !status.is_success() {
+        return Err(CryptoError::OAuth(format!(
+            "token endpoint returned {status}"
+        )));
+    }
+    serde_json::from_str(&text).map_err(|e| CryptoError::OAuth(format!("token JSON: {e}")))
 }
 
 /// Wall-clock read for token-expiry math (inherently wall-clock: the token
@@ -402,21 +462,28 @@ fn now_unix_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
 }
 
-#[derive(serde::Deserialize)]
-struct TokenResponse {
-    access_token: String,
+/// Parsed response from an `OAuth2` token endpoint.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct TokenResponse {
+    /// The access token string.
+    pub access_token: String,
+    /// Token type (e.g. `"Bearer"`).
     #[serde(default)]
-    refresh_token: Option<String>,
+    pub token_type: Option<String>,
+    /// Lifetime in seconds.
     #[serde(default)]
-    expires_in: Option<i64>,
+    pub expires_in: Option<u64>,
+    /// Rotated refresh token (if the provider issues one).
+    #[serde(default)]
+    pub refresh_token: Option<String>,
 }
 
 /// Persists a token set's refresh token.
 ///
 /// # Errors
 /// Credential store failure.
-pub fn persist_refresh<S: CredentialStore>(
-    creds: &CredentialService<S>,
+pub fn persist_refresh(
+    creds: &CredentialService,
     account: kestrel_core::ids::AccountId,
     tokens: &TokenSet,
 ) -> CryptoResult<()> {
@@ -466,6 +533,10 @@ mod tests {
         let o = OAuthProvider::outlook("o", "common");
         assert!(o.auth_url.contains("login.microsoftonline.com/common"));
         assert!(o.scopes.iter().any(|s| s.contains("IMAP")));
+        let y = OAuthProvider::yahoo("y");
+        assert!(y.auth_url.contains("login.yahoo.com"));
+        assert!(y.token_url.contains("login.yahoo.com"));
+        assert!(y.scopes.iter().any(|s| s.contains("mail-w")));
         let f = OAuthProvider::fastmail("f");
         assert!(f.token_url.contains("fastmail"));
     }
@@ -546,5 +617,151 @@ mod tests {
         assert_eq!(percent_decode("a%20b"), "a b");
         assert_eq!(percent_decode("plain"), "plain");
         assert_eq!(percent_decode("a%2Fb%3Ac"), "a/b:c");
+    }
+
+    /// Spawns a minimal mock token endpoint and returns its base URL.
+    async fn spawn_mock_token_server() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let base = format!("http://127.0.0.1:{port}");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.expect("read");
+            let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+            // Determine response based on request body.
+            let body = if request.contains("refresh_token=bad") {
+                r#"{"error":"invalid_grant","error_description":"token is invalid"}"#
+            } else if request.contains("grant_type=refresh_token") {
+                r#"{"access_token":"new_at","token_type":"Bearer","expires_in":3600,"refresh_token":"new_rt"}"#
+            } else {
+                r#"{"error":"unsupported_grant_type"}"#
+            };
+            let status = if request.contains("bad") {
+                "400"
+            } else {
+                "200"
+            };
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.expect("write");
+        });
+        (base, handle)
+    }
+
+    #[tokio::test]
+    async fn refresh_access_token_sends_correct_form() {
+        let (base, handle) = spawn_mock_token_server().await;
+        let http = reqwest::Client::new();
+        let result = refresh_access_token(
+            &http,
+            &format!("{base}/token"),
+            "test-client-id",
+            "test-refresh-token",
+        )
+        .await;
+        let resp = result.expect("success");
+        assert_eq!(resp.access_token, "new_at");
+        assert_eq!(resp.token_type.as_deref(), Some("Bearer"));
+        assert_eq!(resp.expires_in, Some(3600));
+        assert_eq!(resp.refresh_token.as_deref(), Some("new_rt"));
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_access_token_handles_rotation() {
+        let (base, handle) = spawn_mock_token_server().await;
+        let http = reqwest::Client::new();
+        let resp = refresh_access_token(&http, &format!("{base}/token"), "client", "old-rt")
+            .await
+            .expect("ok");
+        // The mock returns a new refresh token.
+        assert_eq!(resp.refresh_token.as_deref(), Some("new_rt"));
+        assert_ne!(resp.refresh_token.as_deref(), Some("old-rt"));
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_access_token_rejects_invalid_token() {
+        let (base, handle) = spawn_mock_token_server().await;
+        let http = reqwest::Client::new();
+        let err = refresh_access_token(&http, &format!("{base}/token"), "client", "bad")
+            .await
+            .expect_err("should fail");
+        match err {
+            CryptoError::OAuth(msg) => assert!(msg.contains("400")),
+            other => panic!("unexpected: {other}"),
+        }
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_access_token_network_error() {
+        let http = reqwest::Client::new();
+        let err = refresh_access_token(&http, "http://127.0.0.1:1/nope", "client", "rt")
+            .await
+            .expect_err("should fail");
+        match err {
+            CryptoError::OAuth(_) => {}
+            other => panic!("unexpected: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_access_token_url_construction() {
+        // Verify the form fields are sent correctly by reading the raw POST body
+        // from a mock server that captures it.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let base = format!("http://127.0.0.1:{port}");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.expect("read");
+            let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
+            // Extract the POST body (after double CRLF).
+            let body = raw.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+            assert!(body.contains("grant_type=refresh_token"), "body: {body}");
+            assert!(body.contains("refresh_token=test-rt"), "body: {body}");
+            assert!(body.contains("client_id=test-cid"), "body: {body}");
+            let resp = r#"{"access_token":"at","token_type":"Bearer","expires_in":3600,"refresh_token":"new-rt"}"#;
+            let http = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}",
+                resp.len()
+            );
+            stream.write_all(http.as_bytes()).await.expect("write");
+        });
+        let http = reqwest::Client::new();
+        let result = refresh_access_token(&http, &format!("{base}/token"), "test-cid", "test-rt")
+            .await
+            .expect("ok");
+        assert_eq!(result.access_token, "at");
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn token_response_deserialize_minimal() {
+        let json = r#"{"access_token":"at","token_type":"Bearer","expires_in":300}"#;
+        let resp: TokenResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(resp.access_token, "at");
+        assert_eq!(resp.token_type.as_deref(), Some("Bearer"));
+        assert_eq!(resp.expires_in, Some(300));
+        assert!(resp.refresh_token.is_none());
+    }
+
+    #[test]
+    fn token_response_deserialize_full() {
+        let json =
+            r#"{"access_token":"at","token_type":"Bearer","expires_in":3600,"refresh_token":"rt"}"#;
+        let resp: TokenResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(resp.refresh_token.as_deref(), Some("rt"));
     }
 }

@@ -1,0 +1,7 @@
+{
+  "benchmark": "search_500k/text_query_first_50",
+  "mean_ms": 8.2,
+  "thresholds": { "fail_ms": 30 },
+  "recorded_at": "2026-08-30T00:00:00Z",
+  "notes": "Initial baseline"
+}

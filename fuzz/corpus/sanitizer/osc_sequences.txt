@@ -1,0 +1,10 @@
+]0;Evil title
+]8;;http://evil.comClick]8;;
+]4;1;rgb:ff/00/00
+]10;rgb:ff/ff/ff
+]11;rgb:00/00/00
+]12;0;blink;cursor
+]50;Set clipboard
+]7;file://localhost/etc/passwd
+]8;params=http://evil.com;;Evil Link]8;;
+]1337;File=$(id)

@@ -33,6 +33,7 @@ fn bench_ingest(c: &mut Criterion) {
                 provider: Provider::Generic,
                 protocol: MailProtocol::Imap,
                 auth_kind: "password".into(),
+                host: String::new(),
             })
             .await
             .unwrap();

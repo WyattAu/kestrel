@@ -1,6 +1,7 @@
 //! Outbox operations (data.db) + cross-DB blob ref adjustments (ADR 0009).
 
 use kestrel_core::ids::{AccountId, BlobHash, OutboxId};
+use tracing::instrument;
 
 use crate::{
     error::{StorageError, StorageResult},
@@ -34,6 +35,7 @@ pub(crate) trait StoreOutboxExt {
         account: AccountId,
         envelope: &OutboxEnvelope,
         raw: &[u8],
+        send_after: Option<i64>,
     ) -> impl Future<Output = StorageResult<OutboxId>>;
     /// Due entries (unsent, retry time reached), oldest first.
     fn outbox_due(&self) -> impl Future<Output = StorageResult<Vec<crate::store::OutboxRow>>>;
@@ -56,11 +58,13 @@ pub(crate) trait StoreOutboxExt {
 }
 
 impl StoreOutboxExt for Store {
+    #[instrument(skip_all, fields(account = %account))]
     async fn outbox_enqueue(
         &self,
         account: AccountId,
         envelope: &OutboxEnvelope,
         raw: &[u8],
+        send_after: Option<i64>,
     ) -> StorageResult<OutboxId> {
         let hash = self.blobs.write(raw).await?;
         let id = OutboxId::from_uuid(self.ids.next_id());
@@ -71,13 +75,14 @@ impl StoreOutboxExt for Store {
         let inline: Option<&[u8]> = (raw.len() < 64 * 1024).then_some(raw);
         let tx = &self.db.data.write;
         sqlx::query!(
-            "INSERT INTO outbox (id, account_id, raw_rfc822_blob, raw_inline, envelope, retry_count, next_attempt_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, ?6)",
+            "INSERT INTO outbox (id, account_id, raw_rfc822_blob, raw_inline, envelope, retry_count, next_attempt_at, send_after, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, ?6, ?7)",
             id.to_string(),
             account.to_string(),
             hash.to_hex(),
             inline,
             envelope_json,
+            send_after,
             now
         )
         .execute(tx)
@@ -88,13 +93,16 @@ impl StoreOutboxExt for Store {
         Ok(id)
     }
 
+    #[instrument(skip_all)]
     async fn outbox_due(&self) -> StorageResult<Vec<crate::store::OutboxRow>> {
         let now = self.clock.now_unix_ms();
         let rows = sqlx::query_as!(
             DueRow,
             "SELECT id, account_id, raw_rfc822_blob, envelope, retry_count, last_error, created_at
              FROM outbox
-             WHERE sent_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+             WHERE sent_at IS NULL
+               AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+               AND (send_after IS NULL OR send_after <= ?1)
              ORDER BY created_at",
             now
         )
@@ -120,6 +128,7 @@ impl StoreOutboxExt for Store {
             .collect()
     }
 
+    #[instrument(skip_all, fields(uid = %id))]
     async fn outbox_mark_retry(
         &self,
         id: OutboxId,
@@ -139,6 +148,7 @@ impl StoreOutboxExt for Store {
         Ok(())
     }
 
+    #[instrument(skip_all, fields(uid = %id))]
     async fn outbox_mark_sent(&self, id: OutboxId, sent_at: i64) -> StorageResult<()> {
         let row = sqlx::query_as!(
             RawBlobRow,
@@ -163,6 +173,7 @@ impl StoreOutboxExt for Store {
         Ok(())
     }
 
+    #[instrument(skip_all, fields(uid = %id))]
     async fn outbox_cancel(&self, id: OutboxId) -> StorageResult<()> {
         let row = sqlx::query_as!(
             RawBlobRow,

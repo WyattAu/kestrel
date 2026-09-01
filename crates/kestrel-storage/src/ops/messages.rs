@@ -12,6 +12,7 @@ use kestrel_core::{
     sanitizer::sanitize_html_body,
     threading::{ThreadInput, thread_messages},
 };
+use tracing::instrument;
 
 use crate::{
     error::{StorageError, StorageResult},
@@ -78,7 +79,19 @@ pub(crate) trait StoreMessagesExt {
         window: Window,
         sort: &SortSpec,
     ) -> impl Future<Output = StorageResult<MessagePage>>;
+    /// Lists messages from all folders with role = 'inbox' (unified inbox).
+    fn list_unified_inbox(
+        &self,
+        window: Window,
+        sort: &SortSpec,
+    ) -> impl Future<Output = StorageResult<MessagePage>>;
     fn get_message(&self, id: MessageId) -> impl Future<Output = StorageResult<MessageLoad>>;
+    /// Returns decoded bytes for a specific MIME part.
+    fn get_attachment_data(
+        &self,
+        message: MessageId,
+        part_key: &str,
+    ) -> impl Future<Output = StorageResult<Vec<u8>>>;
     fn set_flags(
         &self,
         messages: &[MessageId],
@@ -181,6 +194,7 @@ fn row_to_summary(row: MsgRow) -> StorageResult<MessageSummary> {
 impl StoreMessagesExt for Store {
     /// Ingests a parsed batch atomically: threading (pure) → threads upsert
     /// (data.db) → part blobs (CAS) → messages + parts (one cache.db tx).
+    #[instrument(skip_all)]
     #[allow(clippy::too_many_lines)]
     async fn ingest_batch(&self, batch: IngestBatch) -> StorageResult<IngestStats> {
         if batch.messages.is_empty() {
@@ -379,6 +393,7 @@ impl StoreMessagesExt for Store {
     }
 
     /// Windowed, sorted listing.
+    #[instrument(skip_all, fields(folder = %folder))]
     async fn list_messages(
         &self,
         folder: FolderId,
@@ -432,7 +447,60 @@ impl StoreMessagesExt for Store {
         })
     }
 
+    /// Windowed, sorted listing across all folders with role = 'inbox'.
+    #[instrument(skip_all)]
+    async fn list_unified_inbox(
+        &self,
+        window: Window,
+        sort: &SortSpec,
+    ) -> StorageResult<MessagePage> {
+        let counted: CountRow = sqlx::query_as(
+            "SELECT COUNT(*) AS n FROM messages m
+             JOIN folders f ON f.id = m.folder_id
+             WHERE f.role = 'inbox'",
+        )
+        .fetch_one(&self.db.cache.read)
+        .await?;
+        let total = counted.n;
+        let order = match (sort.field, sort.dir) {
+            (SortField::Date, SortDir::Asc) => "m.internal_date ASC",
+            (SortField::Date, SortDir::Desc) => "m.internal_date DESC",
+            (SortField::Subject, SortDir::Asc) => "m.subject ASC",
+            (SortField::Subject, SortDir::Desc) => "m.subject DESC",
+            (SortField::Sender, SortDir::Asc) => "m.from_addr ASC",
+            (SortField::Sender, SortDir::Desc) => "m.from_addr DESC",
+            (SortField::Uid, SortDir::Asc) => "m.uid ASC",
+            (SortField::Uid, SortDir::Desc) => "m.uid DESC",
+        };
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT m.id, m.folder_id, m.uid, m.internal_date, m.flags, m.message_id, m.in_reply_to,
+                    m.subject, m.from_addr, m.to_addrs, m.cc_addrs, m.size, m.is_read, m.is_flagged,
+                    m.is_answered, m.has_attachments, m.thread_id
+             FROM messages m
+             JOIN folders f ON f.id = m.folder_id
+             WHERE f.role = 'inbox'
+             ORDER BY ",
+        );
+        qb.push(order);
+        qb.push(" LIMIT ");
+        qb.push_bind(i64::try_from(window.limit).unwrap_or(50));
+        qb.push(" OFFSET ");
+        qb.push_bind(i64::try_from(window.offset).unwrap_or(0));
+        let rows: Vec<MsgRow> = qb
+            .build_query_as::<MsgRow>()
+            .fetch_all(&self.db.cache.read)
+            .await?;
+        Ok(MessagePage {
+            items: rows
+                .into_iter()
+                .map(row_to_summary)
+                .collect::<StorageResult<Vec<_>>>()?,
+            total: u64::try_from(total.max(0)).unwrap_or(0),
+        })
+    }
+
     /// Loads a message with resolved body (re-parses the raw blob).
+    #[instrument(skip_all, fields(message = %id))]
     async fn get_message(&self, id: MessageId) -> StorageResult<MessageLoad> {
         let row = sqlx::query_as!(
             RawBlobRow,
@@ -515,7 +583,32 @@ impl StoreMessagesExt for Store {
         Ok(MessageLoad { view, raw })
     }
 
+    #[instrument(skip_all, fields(message = %message, part_key))]
+    async fn get_attachment_data(
+        &self,
+        message: MessageId,
+        part_key: &str,
+    ) -> StorageResult<Vec<u8>> {
+        use crate::ops::blobs_gc::StoreBlobsExt;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT blob_sha256 FROM parts WHERE id = ?1 AND message_id = ?2")
+                .bind(part_key)
+                .bind(message.to_string())
+                .fetch_optional(&self.db.cache.read)
+                .await?;
+        let Some((hash_hex,)) = row else {
+            return Err(StorageError::Row(format!(
+                "part {part_key} not found in message {message}"
+            )));
+        };
+        let hash = BlobHash::parse_hex(&hash_hex).ok_or_else(|| {
+            StorageError::Row(format!("invalid blob hash {hash_hex} for part {part_key}"))
+        })?;
+        self.read_blob(&hash).await
+    }
+
     /// Applies a flag mutation; returns the affected ids.
+    #[instrument(skip_all, fields(uid = messages.len()))]
     async fn set_flags(
         &self,
         messages: &[MessageId],
@@ -570,6 +663,7 @@ impl StoreMessagesExt for Store {
     }
 
     /// Deletes messages locally (parts cascade; triggers adjust refcounts).
+    #[instrument(skip_all, fields(uid = messages.len()))]
     async fn delete_messages(&self, messages: &[MessageId]) -> StorageResult<u64> {
         if messages.is_empty() {
             return Ok(0);
@@ -585,6 +679,7 @@ impl StoreMessagesExt for Store {
     }
 
     /// Re-assigns messages to another folder with fresh UIDs.
+    #[instrument(skip_all, fields(uid = moves.len()))]
     async fn move_messages(&self, moves: &[(MessageId, FolderId, u32)]) -> StorageResult<u64> {
         let mut count = 0u64;
         let tx = &self.db.cache.write;
@@ -603,6 +698,7 @@ impl StoreMessagesExt for Store {
     }
 
     /// Purges a folder's message rows (UIDVALIDITY reconciliation step 1).
+    #[instrument(skip_all, fields(folder = %folder))]
     async fn purge_folder(&self, folder: FolderId) -> StorageResult<u64> {
         let result = sqlx::query!(
             "DELETE FROM messages WHERE folder_id = ?1",
@@ -614,6 +710,7 @@ impl StoreMessagesExt for Store {
     }
 
     /// Messages pending index (catch-up cursor), re-parsed for body text.
+    #[instrument(skip_all)]
     async fn pending_index(&self, limit: u64) -> StorageResult<Vec<PendingDoc>> {
         let rows = sqlx::query_as!(
             MsgRow,
@@ -677,6 +774,7 @@ impl StoreMessagesExt for Store {
     }
 
     /// Full-feed variant for rebuild (ignores the `indexed_at` cursor).
+    #[instrument(skip_all)]
     async fn feed_all_for_index(&self, limit: u64, offset: u64) -> StorageResult<Vec<PendingDoc>> {
         let rows = sqlx::query_as!(
             MsgRow,
@@ -741,6 +839,7 @@ impl StoreMessagesExt for Store {
     }
 
     /// Marks messages indexed.
+    #[instrument(skip_all, fields(uid = ids.len()))]
     async fn mark_indexed(&self, ids: &[MessageId], at: i64) -> StorageResult<()> {
         if ids.is_empty() {
             return Ok(());

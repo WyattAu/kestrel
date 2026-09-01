@@ -22,9 +22,15 @@ use kestrel_storage::{IngestBatch, IngestMessage, NewAccount, NewFolder};
 async fn spawn_engine(dir: &std::path::Path) -> EngineHandle {
     let paths = Arc::new(Paths::nested_under(dir));
     paths.ensure().unwrap();
-    Engine::spawn(Arc::new(Config::default()), paths)
-        .await
-        .expect("engine spawns")
+    Engine::spawn_with(
+        Arc::new(Config::default()),
+        paths,
+        Arc::new(kestrel_core::ids::SystemIdGenerator),
+        Arc::new(kestrel_core::clock::SystemClock),
+        Arc::new(kestrel_crypto::InMemoryStore::new()),
+    )
+    .await
+    .expect("engine spawns")
 }
 
 async fn send(handle: &EngineHandle, payload: CommandPayload) -> Reply {
@@ -131,7 +137,7 @@ async fn engine_boot_accounts_folders_messages_search_outbox() {
 
     // EngineStarted carries the protocol version.
     match events.recv().await {
-        Ok(EngineEvent::EngineStarted { version, .. }) => assert_eq!(version, 1),
+        Ok(EngineEvent::EngineStarted { version, .. }) => assert_eq!(version, 2),
         other => panic!("expected EngineStarted, got {other:?}"),
     }
 
@@ -151,6 +157,7 @@ async fn engine_boot_accounts_folders_messages_search_outbox() {
                 provider: Provider::Generic,
                 protocol: MailProtocol::Imap,
                 auth_kind: "password".into(),
+                host: String::new(),
             })
             .await
             .unwrap();
@@ -240,6 +247,12 @@ async fn engine_boot_accounts_folders_messages_search_outbox() {
                 references: vec![],
                 body_markdown: "**hello**".into(),
                 attachments: vec![],
+                pgp_sign: false,
+                pgp_encrypt: false,
+                smime_sign: false,
+                smime_encrypt: false,
+                send_after: None,
+                priority: kestrel_core::protocol::Priority::Normal,
             },
             reply: dummy(),
         },
@@ -318,4 +331,230 @@ async fn shutdown_is_ordered_and_completes() {
     assert!(deadline.is_ok(), "shutdown completes in order");
     assert_eq!(stages.first(), Some(&ShutdownStage::DetachFrontends));
     assert_eq!(stages.last(), Some(&ShutdownStage::Done));
+}
+
+#[tokio::test]
+async fn offline_mutations_are_enqueued() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = spawn_engine(dir.path()).await;
+    let mut events = handle.events();
+    let _ = events.recv().await; // EngineStarted
+
+    // Seed an account via storage.
+    let account = {
+        let paths = Arc::new(Paths::nested_under(dir.path()));
+        let ids = Arc::new(SequentialIds::new());
+        let clock = Arc::new(kestrel_core::clock::FakeClock::new(1));
+        let (storage, cancel) =
+            kestrel_storage::StorageService::spawn((*paths).clone(), ids, clock);
+        let acct = storage
+            .upsert_account(NewAccount {
+                name: "Offline".into(),
+                email: "off@test".into(),
+                provider: Provider::Generic,
+                protocol: MailProtocol::Imap,
+                auth_kind: "password".into(),
+                host: String::new(),
+            })
+            .await
+            .unwrap();
+        cancel.cancel();
+        acct
+    };
+
+    // Go offline.
+    handle
+        .commands
+        .send(command(FrontendKind::Tui, CommandPayload::GoOffline))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Send a SetFlags mutation while offline.
+    let msg_id = kestrel_core::ids::MessageId::from_uuid(uuid::Uuid::now_v7());
+    let reply = send(
+        &handle,
+        CommandPayload::SetFlags {
+            messages: vec![msg_id],
+            flags: FlagOp::Add(vec![Flag::Seen]),
+            reply: dummy(),
+        },
+    )
+    .await;
+    assert!(matches!(reply, Reply::Accepted));
+
+    // Verify the op was enqueued in pending_ops.
+    let paths = Arc::new(Paths::nested_under(dir.path()));
+    let ids = Arc::new(SequentialIds::new());
+    let clock = Arc::new(kestrel_core::clock::FakeClock::new(2));
+    let (storage, cancel) = kestrel_storage::StorageService::spawn((*paths).clone(), ids, clock);
+    let ops = storage.pending_ops_drain(account).await.unwrap();
+    cancel.cancel();
+    assert_eq!(ops.len(), 1, "expected one pending op");
+    assert_eq!(ops[0].op_type, kestrel_storage::OpType::Flag);
+    assert_eq!(ops[0].account_id, account);
+}
+
+#[tokio::test]
+async fn go_online_replays_pending_ops() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = spawn_engine(dir.path()).await;
+    let mut events = handle.events();
+    let _ = events.recv().await; // EngineStarted
+
+    // Seed an account.
+    let account = {
+        let paths = Arc::new(Paths::nested_under(dir.path()));
+        let ids = Arc::new(SequentialIds::new());
+        let clock = Arc::new(kestrel_core::clock::FakeClock::new(1));
+        let (storage, cancel) =
+            kestrel_storage::StorageService::spawn((*paths).clone(), ids, clock);
+        let acct = storage
+            .upsert_account(NewAccount {
+                name: "Replay".into(),
+                email: "replay@test".into(),
+                provider: Provider::Generic,
+                protocol: MailProtocol::Imap,
+                auth_kind: "password".into(),
+                host: String::new(),
+            })
+            .await
+            .unwrap();
+        cancel.cancel();
+        acct
+    };
+
+    // Go offline and enqueue a flag mutation.
+    handle
+        .commands
+        .send(command(FrontendKind::Tui, CommandPayload::GoOffline))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let msg_id = kestrel_core::ids::MessageId::from_uuid(uuid::Uuid::now_v7());
+    let reply = send(
+        &handle,
+        CommandPayload::SetFlags {
+            messages: vec![msg_id],
+            flags: FlagOp::Add(vec![Flag::Flagged]),
+            reply: dummy(),
+        },
+    )
+    .await;
+    assert!(matches!(reply, Reply::Accepted));
+
+    // Verify pending op exists.
+    {
+        let paths = Arc::new(Paths::nested_under(dir.path()));
+        let ids = Arc::new(SequentialIds::new());
+        let clock = Arc::new(kestrel_core::clock::FakeClock::new(2));
+        let (storage, cancel) =
+            kestrel_storage::StorageService::spawn((*paths).clone(), ids, clock);
+        let ops = storage.pending_ops_drain(account).await.unwrap();
+        assert_eq!(ops.len(), 1);
+        cancel.cancel();
+    }
+
+    // Go online — this replays pending ops and removes them.
+    handle
+        .commands
+        .send(command(FrontendKind::Tui, CommandPayload::GoOnline))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Verify pending ops are cleared.
+    {
+        let paths = Arc::new(Paths::nested_under(dir.path()));
+        let ids = Arc::new(SequentialIds::new());
+        let clock = Arc::new(kestrel_core::clock::FakeClock::new(3));
+        let (storage, cancel) =
+            kestrel_storage::StorageService::spawn((*paths).clone(), ids, clock);
+        let ops = storage.pending_ops_drain(account).await.unwrap();
+        assert!(ops.is_empty(), "pending ops should be cleared after replay");
+        cancel.cancel();
+    }
+}
+
+#[tokio::test]
+async fn multiple_offline_mutations_are_enqueued_fifo() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = spawn_engine(dir.path()).await;
+    let mut events = handle.events();
+    let _ = events.recv().await; // EngineStarted
+
+    let account = {
+        let paths = Arc::new(Paths::nested_under(dir.path()));
+        let ids = Arc::new(SequentialIds::new());
+        let clock = Arc::new(kestrel_core::clock::FakeClock::new(1));
+        let (storage, cancel) =
+            kestrel_storage::StorageService::spawn((*paths).clone(), ids, clock);
+        let acct = storage
+            .upsert_account(NewAccount {
+                name: "FIFO".into(),
+                email: "fifo@test".into(),
+                provider: Provider::Generic,
+                protocol: MailProtocol::Imap,
+                auth_kind: "password".into(),
+                host: String::new(),
+            })
+            .await
+            .unwrap();
+        cancel.cancel();
+        acct
+    };
+
+    // Go offline.
+    handle
+        .commands
+        .send(command(FrontendKind::Tui, CommandPayload::GoOffline))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Enqueue 3 mutations.
+    let msg1 = kestrel_core::ids::MessageId::from_uuid(uuid::Uuid::now_v7());
+    let msg2 = kestrel_core::ids::MessageId::from_uuid(uuid::Uuid::now_v7());
+    let folder = kestrel_core::ids::FolderId::from_uuid(uuid::Uuid::now_v7());
+
+    let _ = send(
+        &handle,
+        CommandPayload::SetFlags {
+            messages: vec![msg1],
+            flags: FlagOp::Add(vec![Flag::Seen]),
+            reply: dummy(),
+        },
+    )
+    .await;
+    let _ = send(
+        &handle,
+        CommandPayload::MoveMessages {
+            messages: vec![msg2],
+            to: folder,
+            reply: dummy(),
+        },
+    )
+    .await;
+    let _ = send(
+        &handle,
+        CommandPayload::DeleteMessages {
+            messages: vec![msg1],
+            expunge: false,
+            reply: dummy(),
+        },
+    )
+    .await;
+
+    // Verify FIFO order.
+    let paths = Arc::new(Paths::nested_under(dir.path()));
+    let ids = Arc::new(SequentialIds::new());
+    let clock = Arc::new(kestrel_core::clock::FakeClock::new(2));
+    let (storage, cancel) = kestrel_storage::StorageService::spawn((*paths).clone(), ids, clock);
+    let ops = storage.pending_ops_drain(account).await.unwrap();
+    cancel.cancel();
+    assert_eq!(ops.len(), 3, "expected 3 pending ops");
+    assert_eq!(ops[0].op_type, kestrel_storage::OpType::Flag);
+    assert_eq!(ops[1].op_type, kestrel_storage::OpType::Move);
+    assert_eq!(ops[2].op_type, kestrel_storage::OpType::Delete);
 }

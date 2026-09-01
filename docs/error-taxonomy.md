@@ -1,6 +1,6 @@
 # Kestrel Error Taxonomy
 
-Status: **v1.0 skeleton — extends as Phase 1–2 crates land** · Governs ADR
+Status: **v1.0 — complete** · Governs ADR
 0007. Every error variant in every crate maps to exactly one recovery class;
 UI wording lives in frontends, never in `Display` strings.
 

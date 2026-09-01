@@ -184,6 +184,8 @@ impl BlobStore {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
+    use proptest::prelude::*;
+
     use super::*;
 
     fn store(tmp: &std::path::Path) -> BlobStore {
@@ -253,5 +255,33 @@ mod tests {
     fn set_mtime(path: &std::path::Path, t: std::time::SystemTime) {
         let f = std::fs::File::open(path).unwrap();
         f.set_modified(t).unwrap();
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(kestrel_core::testkit::proptest_cases()))]
+
+        #[test]
+        fn cas_write_is_idempotent_and_read_roundtrips(data in proptest::collection::vec(0u8..=255u8, 0..4096)) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let s = store(tmp.path());
+
+                // Write twice, same hash
+                let h1 = s.write(&data).await.unwrap();
+                let h2 = s.write(&data).await.unwrap();
+                prop_assert_eq!(&h1, &h2, "write not idempotent");
+
+                // Read round-trips
+                let read_back = s.read(&h1).await.unwrap();
+                prop_assert_eq!(&read_back, &data, "read mismatch");
+
+                // Remove then read fails
+                s.remove(&h1).await.unwrap();
+                prop_assert!(s.read(&h1).await.is_err(), "read after remove should fail");
+
+                Ok(())
+            })?;
+        }
     }
 }

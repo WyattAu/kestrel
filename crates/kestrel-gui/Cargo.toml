@@ -19,10 +19,20 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 slint = { version = "1.17", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2"] }
 wry = "0.56"
+winit = "0.30"
 uuid = { workspace = true }
 tracing-subscriber = { workspace = true }
 open = "5"
 notify-rust = "4"
+toml = { workspace = true }
+tray-icon = { version = "0.24", optional = true }
+raw-window-handle = { version = "0.6", features = ["std"], optional = true }
+mime_guess = { version = "2", optional = true }
+arboard = { version = "3", optional = true }
+
+[features]
+default = []
+tray = ["dep:tray-icon", "dep:raw-window-handle", "dep:mime_guess", "dep:arboard"]
 
 [build-dependencies]
 slint-build = "1.17"
@@ -33,9 +43,14 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+criterion = { workspace = true }
 # Structural HTML analysis for the security tests (threat model §7).
 # Note: crawlkit-engine cannot coexist in this workspace (conflicting
 # libsqlite3-sys versions: crawlkit pins 0.30, sqlx 0.9 needs 0.37);
 # the same structural assertions are implemented below using an
 # independent HTML tokenizer.
 scraper = "0.21"
+
+[[bench]]
+name = "gui_startup"
+harness = false

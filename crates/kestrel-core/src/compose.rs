@@ -8,7 +8,7 @@ use crate::{
     clock::Clock,
     error::KestrelError,
     ids::IdGenerator,
-    protocol::{Address, Draft},
+    protocol::{Address, Draft, Priority},
 };
 
 /// Builds the raw RFC 5322 bytes for a draft.
@@ -83,6 +83,7 @@ pub fn build_rfc5322(
             .join(" ");
         let _ = writeln!(out, "References: {refs}");
     }
+    write_priority_header(&mut out, draft.priority);
     out.push_str("MIME-Version: 1.0\r\n");
 
     let html = markdown_to_html(&draft.body_markdown);
@@ -119,6 +120,117 @@ pub fn build_rfc5322(
         }
         let _ = write!(out, "--{boundary_mix}--\r\n");
     }
+
+    Ok(out.into_bytes())
+}
+
+/// Builds RFC 5322 message with optional `OpenPGP` sign/encrypt wrapping
+/// (RFC 3156 / PGP/MIME).
+///
+/// The raw RFC 5322 bytes are produced by [`build_rfc5322`]. When `sign_fn` is
+/// provided the message is signed; when `encrypt_fn` is provided the message
+/// (optionally signed first) is encrypted. The result is wrapped in the
+/// appropriate MIME content type:
+///
+/// * **Sign only** → `multipart/signed` (RFC 3156 §5)
+/// * **Encrypt only** → `multipart/encrypted` (RFC 3156 §4)
+/// * **Both** → sign first, then encrypt → `multipart/encrypted`
+/// * **Neither** → raw RFC 5322 bytes returned unchanged
+///
+/// `sign_fn` receives the raw RFC 5322 bytes and must return the
+/// signature data (e.g. an armored detached signature).
+///
+/// `encrypt_fn` receives the plaintext to encrypt (raw RFC 5322 bytes
+/// when unsigned, or the signed output when both flags are set) and must
+/// return the armored PGP ciphertext.
+///
+/// # Errors
+/// [`KestrelError::DraftInvalid`] when the draft fails validation or a
+/// PGP operation produces invalid UTF-8.
+pub fn build_rfc5322_pgp<FSign, FEncrypt>(
+    draft: &Draft,
+    ids: &dyn IdGenerator,
+    clock: &dyn Clock,
+    sign_fn: Option<FSign>,
+    encrypt_fn: Option<FEncrypt>,
+) -> Result<Vec<u8>, KestrelError>
+where
+    FSign: FnOnce(&[u8]) -> Result<Vec<u8>, KestrelError>,
+    FEncrypt: FnOnce(&[u8]) -> Result<Vec<u8>, KestrelError>,
+{
+    let raw = build_rfc5322(draft, ids, clock)?;
+
+    let (data, was_signed) = if let Some(sign) = sign_fn {
+        (sign(&raw)?, true)
+    } else {
+        (raw.clone(), false)
+    };
+
+    if let Some(encrypt) = encrypt_fn {
+        let encrypted = encrypt(&data)?;
+        return wrap_multipart_encrypted(encrypted, ids);
+    }
+
+    if was_signed {
+        return wrap_multipart_signed(raw, data, ids);
+    }
+
+    Ok(raw)
+}
+
+fn wrap_multipart_encrypted(
+    pgp_data: Vec<u8>,
+    ids: &dyn IdGenerator,
+) -> Result<Vec<u8>, KestrelError> {
+    let boundary = boundary(ids);
+    let pgp_str = String::from_utf8(pgp_data).map_err(|e| KestrelError::DraftInvalid {
+        detail: format!("PGP output not valid UTF-8: {e}"),
+    })?;
+
+    let mut out = String::with_capacity(512 + pgp_str.len());
+    let _ = write!(
+        out,
+        "Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; \
+         boundary=\"{boundary}\"\r\n\
+         MIME-Version: 1.0\r\n\r\n\
+         --{boundary}\r\n\
+         Content-Type: application/pgp-encrypted\r\n\r\n\
+         Version: 1\r\n\r\n\
+         --{boundary}\r\n\
+         Content-Type: application/octet-stream\r\n\r\n\
+         {pgp_str}\
+         --{boundary}--\r\n"
+    );
+
+    Ok(out.into_bytes())
+}
+
+fn wrap_multipart_signed(
+    message: Vec<u8>,
+    signature: Vec<u8>,
+    ids: &dyn IdGenerator,
+) -> Result<Vec<u8>, KestrelError> {
+    let boundary = boundary(ids);
+    let message_str = String::from_utf8(message).map_err(|e| KestrelError::DraftInvalid {
+        detail: format!("message not valid UTF-8: {e}"),
+    })?;
+    let sig_str = String::from_utf8(signature).map_err(|e| KestrelError::DraftInvalid {
+        detail: format!("signature not valid UTF-8: {e}"),
+    })?;
+
+    let mut out = String::with_capacity(512 + message_str.len() + sig_str.len());
+    let _ = write!(
+        out,
+        "Content-Type: multipart/signed; micalg=pgp-sha256; \
+         protocol=\"application/pgp-signature\"; boundary=\"{boundary}\"\r\n\
+         MIME-Version: 1.0\r\n\r\n\
+         --{boundary}\r\n\
+         {message_str}\
+         --{boundary}\r\n\
+         Content-Type: application/pgp-signature\r\n\r\n\
+         {sig_str}\
+         --{boundary}--\r\n"
+    );
 
     Ok(out.into_bytes())
 }
@@ -170,6 +282,20 @@ fn encode_header(value: &str) -> String {
         rest = tail;
     }
     out
+}
+
+fn write_priority_header(out: &mut String, priority: Priority) {
+    match priority {
+        Priority::High => {
+            let _ = writeln!(out, "X-Priority: 1 (Highest)");
+        }
+        Priority::Normal => {
+            let _ = writeln!(out, "X-Priority: 3 (Normal)");
+        }
+        Priority::Low => {
+            let _ = writeln!(out, "X-Priority: 5 (Lowest)");
+        }
+    }
 }
 
 fn format_address(addr: &Address) -> String {
@@ -279,6 +405,8 @@ mod tests {
     use super::*;
     use crate::{mime::MimeParser as _, protocol::DraftAttachment, testkit::SequentialIds};
 
+    type PgpFn = fn(&[u8]) -> Result<Vec<u8>, KestrelError>;
+
     fn draft(body: &str) -> Draft {
         Draft {
             account: crate::ids::AccountId::from_uuid(uuid::Uuid::now_v7()),
@@ -294,6 +422,12 @@ mod tests {
             references: vec![],
             body_markdown: body.into(),
             attachments: vec![],
+            pgp_sign: false,
+            pgp_encrypt: false,
+            smime_sign: false,
+            smime_encrypt: false,
+            send_after: None,
+            priority: Priority::Normal,
         }
     }
 
@@ -414,5 +548,140 @@ mod tests {
         let b = boundary(ids.as_ref());
         assert_ne!(a, b);
         assert!(a.starts_with("=_kestrel-"));
+    }
+
+    #[test]
+    fn pgp_signed_only() {
+        let ids = SequentialIds::new();
+        let d = draft("signed body");
+        let raw = build_rfc5322_pgp(
+            &d,
+            &ids,
+            &FixedClock,
+            Some(|_data: &[u8]| -> Result<Vec<u8>, KestrelError> {
+                Ok(
+                    b"-----BEGIN PGP SIGNATURE-----\nfakesig\n-----END PGP SIGNATURE-----\n"
+                        .to_vec(),
+                )
+            }),
+            None::<PgpFn>,
+        )
+        .unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        assert!(
+            text.contains("multipart/signed"),
+            "should be multipart/signed"
+        );
+        assert!(
+            text.contains("protocol=\"application/pgp-signature\""),
+            "must declare PGP signature protocol"
+        );
+        assert!(text.contains("fakesig"));
+        assert!(text.contains("signed body"));
+    }
+
+    #[test]
+    fn pgp_encrypted_only() {
+        let ids = SequentialIds::new();
+        let d = draft("encrypted body");
+        let raw = build_rfc5322_pgp(
+            &d,
+            &ids,
+            &FixedClock,
+            None::<PgpFn>,
+            Some(|_data: &[u8]| -> Result<Vec<u8>, KestrelError> {
+                Ok(
+                    b"-----BEGIN PGP MESSAGE-----\nfakecipher\n-----END PGP MESSAGE-----\n"
+                        .to_vec(),
+                )
+            }),
+        )
+        .unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        assert!(
+            text.contains("multipart/encrypted"),
+            "should be multipart/encrypted"
+        );
+        assert!(
+            text.contains("protocol=\"application/pgp-encrypted\""),
+            "must declare PGP encrypted protocol"
+        );
+        assert!(text.contains("Version: 1"));
+        assert!(text.contains("fakecipher"));
+    }
+
+    #[test]
+    fn pgp_sign_and_encrypt() {
+        let ids = SequentialIds::new();
+        let d = draft("sign-then-encrypt body");
+        let raw = build_rfc5322_pgp(
+            &d,
+            &ids,
+            &FixedClock,
+            Some(|_data: &[u8]| -> Result<Vec<u8>, KestrelError> {
+                Ok(
+                    b"-----BEGIN PGP SIGNATURE-----\nfakesig\n-----END PGP SIGNATURE-----\n"
+                        .to_vec(),
+                )
+            }),
+            Some(|data: &[u8]| -> Result<Vec<u8>, KestrelError> {
+                // encrypt receives signed data
+                assert!(
+                    String::from_utf8_lossy(data).contains("fakesig"),
+                    "encrypt should receive the signed output"
+                );
+                Ok(b"-----BEGIN PGP MESSAGE-----\nencrypted\n-----END PGP MESSAGE-----\n".to_vec())
+            }),
+        )
+        .unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        // Both sign + encrypt => outer layer is multipart/encrypted
+        assert!(text.contains("multipart/encrypted"));
+        assert!(text.contains("encrypted"));
+        assert!(
+            !text.contains("multipart/signed"),
+            "no inner signed wrapper when encrypted"
+        );
+    }
+
+    #[test]
+    fn pgp_neither_returns_raw() {
+        let ids = SequentialIds::new();
+        let mut d = draft("plain body");
+        d.priority = Priority::Normal;
+        let raw = build_rfc5322_pgp(&d, &ids, &FixedClock, None::<PgpFn>, None::<PgpFn>).unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        assert!(text.contains("multipart/alternative"));
+        assert!(text.contains("plain body"));
+    }
+
+    #[test]
+    fn priority_high_header() {
+        let ids = SequentialIds::new();
+        let mut d = draft("urgent body");
+        d.priority = Priority::High;
+        let raw = build_rfc5322(&d, &ids, &FixedClock).unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        assert!(text.contains("X-Priority: 1 (Highest)"));
+    }
+
+    #[test]
+    fn priority_normal_header() {
+        let ids = SequentialIds::new();
+        let mut d = draft("normal body");
+        d.priority = Priority::Normal;
+        let raw = build_rfc5322(&d, &ids, &FixedClock).unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        assert!(text.contains("X-Priority: 3 (Normal)"));
+    }
+
+    #[test]
+    fn priority_low_header() {
+        let ids = SequentialIds::new();
+        let mut d = draft("low priority body");
+        d.priority = Priority::Low;
+        let raw = build_rfc5322(&d, &ids, &FixedClock).unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        assert!(text.contains("X-Priority: 5 (Lowest)"));
     }
 }

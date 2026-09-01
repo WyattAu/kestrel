@@ -5,7 +5,9 @@ use kestrel_core::{
     error::KestrelError,
     ids::{AccountId, BlobHash, FolderId, MessageId, OutboxId},
     protocol::{ConnectionState, MessageView, SortSpec, Window},
-    store_model::{FolderRow, IngestBatch, IngestStats, MailStore, NewFolder, OutboxRow},
+    store_model::{
+        FolderRow, IngestBatch, IngestStats, MailStore, NewFolder, OutboxRow, SnoozeEntry,
+    },
 };
 
 use crate::store::StorageHandle;
@@ -102,5 +104,42 @@ impl MailStore for StorageHandle {
         StorageHandle::get_message(self, id)
             .await
             .map(|load| load.view)
+    }
+
+    async fn get_attachment_data(
+        &self,
+        message: MessageId,
+        part_key: &str,
+    ) -> Result<Vec<u8>, KestrelError> {
+        StorageHandle::get_attachment_data(self, message, part_key.to_owned()).await
+    }
+
+    async fn enqueue_snooze(
+        &self,
+        message: MessageId,
+        account: AccountId,
+        folder: FolderId,
+        until: i64,
+    ) -> Result<(), KestrelError> {
+        StorageHandle::enqueue_snooze(self, message, account, folder, until).await?;
+        Ok(())
+    }
+
+    async fn get_due_snoozes(&self) -> Result<Vec<SnoozeEntry>, KestrelError> {
+        let rows = StorageHandle::get_due_snoozes(self).await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| SnoozeEntry {
+                id: r.id,
+                message: r.message_id,
+                account: r.account_id,
+                folder: r.folder_id,
+                snoozed_until: r.snoozed_until,
+            })
+            .collect())
+    }
+
+    async fn remove_snooze(&self, message: MessageId) -> Result<(), KestrelError> {
+        StorageHandle::remove_snooze(self, message).await
     }
 }

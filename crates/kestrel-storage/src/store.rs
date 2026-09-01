@@ -19,10 +19,14 @@ use kestrel_core::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, instrument};
 
 use crate::{
     error::StorageError,
-    ops::{StoreBlobsExt, StoreMessagesExt, StoreOutboxExt},
+    ops::{
+        OpType, PendingOp, PendingOpPayload, StoreBlobsExt, StoreMessagesExt, StoreOutboxExt,
+        StorePendingOpsExt, StoreSnoozeExt,
+    },
 };
 
 /// Inbound storage command (internal protocol; the engine router translates
@@ -98,12 +102,30 @@ pub enum StoreCommand {
         /// Reply channel.
         reply: oneshot::Sender<Result<MessagePage, StorageError>>,
     },
+    /// Windowed listing across all folders with role = 'inbox'.
+    ListUnifiedInbox {
+        /// Window.
+        window: Window,
+        /// Sort spec.
+        sort: SortSpec,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<MessagePage, StorageError>>,
+    },
     /// Full message view (re-parses raw when present).
     GetMessage {
         /// Message id.
         id: MessageId,
         /// Reply channel.
         reply: oneshot::Sender<Result<MessageLoad, StorageError>>,
+    },
+    /// Decoded bytes for a specific MIME part.
+    GetAttachmentData {
+        /// Message containing the part.
+        message: MessageId,
+        /// Part key (from `PartIdView.key`).
+        part_key: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<Vec<u8>, StorageError>>,
     },
     /// Apply a flag mutation to a set of messages.
     SetFlags {
@@ -170,6 +192,8 @@ pub enum StoreCommand {
         envelope: OutboxEnvelope,
         /// Raw RFC 5322 bytes.
         raw: Vec<u8>,
+        /// Optional scheduled send time (unix ms).
+        send_after: Option<i64>,
         /// Reply channel.
         reply: oneshot::Sender<Result<OutboxId, StorageError>>,
     },
@@ -204,6 +228,69 @@ pub enum StoreCommand {
     OutboxCancel {
         /// Entry.
         id: OutboxId,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), StorageError>>,
+    },
+
+    // ---- snooze (cache.db) ----
+    /// Enqueue a snooze entry.
+    SnoozeEnqueue {
+        /// Message to snooze.
+        message: MessageId,
+        /// Owning account.
+        account: AccountId,
+        /// Folder containing the message.
+        folder: FolderId,
+        /// When the snooze expires (unix ms).
+        until: i64,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<String, StorageError>>,
+    },
+    /// Get all snoozes that have expired (due).
+    SnoozeGetDue {
+        /// Reply channel.
+        reply: oneshot::Sender<Result<Vec<crate::ops::SnoozeRow>, StorageError>>,
+    },
+    /// Remove a snooze by message id.
+    SnoozeRemove {
+        /// Message to unsnooze.
+        message: MessageId,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), StorageError>>,
+    },
+
+    // ---- offline mutation journal (sync-engine.md §6) ----
+    /// Enqueue a mutation for later replay.
+    PendingOpsEnqueue {
+        /// Owning account.
+        account: AccountId,
+        /// Operation type.
+        op_type: OpType,
+        /// Serialized payload.
+        payload: PendingOpPayload,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<i64, StorageError>>,
+    },
+    /// Drain all pending ops for an account (FIFO order).
+    PendingOpsDrain {
+        /// Account.
+        account: AccountId,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<Vec<PendingOp>, StorageError>>,
+    },
+    /// Mark a pending op as failed.
+    PendingOpsMarkFailed {
+        /// Row id.
+        id: i64,
+        /// Error message.
+        error: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), StorageError>>,
+    },
+    /// Remove a pending op after successful replay.
+    PendingOpsRemove {
+        /// Row id.
+        id: i64,
         /// Reply channel.
         reply: oneshot::Sender<Result<(), StorageError>>,
     },
@@ -298,6 +385,8 @@ pub struct NewAccount {
     pub protocol: MailProtocol,
     /// `password` | `oauth2`.
     pub auth_kind: String,
+    /// IMAP/JMAP host.
+    pub host: String,
 }
 
 /// Full message load returned by `GetMessage`.
@@ -453,6 +542,23 @@ impl StorageHandle {
         .await
     }
 
+    /// Windowed message listing across all folders with role = 'inbox'.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn list_unified_inbox(
+        &self,
+        window: Window,
+        sort: SortSpec,
+    ) -> Result<MessagePage, KestrelError> {
+        self.call(move |reply| StoreCommand::ListUnifiedInbox {
+            window,
+            sort,
+            reply,
+        })
+        .await
+    }
+
     /// Loads a message with resolved bodies.
     ///
     /// # Errors
@@ -460,6 +566,23 @@ impl StorageHandle {
     pub async fn get_message(&self, id: MessageId) -> Result<MessageLoad, KestrelError> {
         self.call(move |reply| StoreCommand::GetMessage { id, reply })
             .await
+    }
+
+    /// Returns decoded bytes for a specific MIME part.
+    ///
+    /// # Errors
+    /// [`KestrelError`] when the part is missing.
+    pub async fn get_attachment_data(
+        &self,
+        message: MessageId,
+        part_key: String,
+    ) -> Result<Vec<u8>, KestrelError> {
+        self.call(move |reply| StoreCommand::GetAttachmentData {
+            message,
+            part_key,
+            reply,
+        })
+        .await
     }
 
     /// Applies a flag operation.
@@ -557,11 +680,13 @@ impl StorageHandle {
         account: AccountId,
         envelope: OutboxEnvelope,
         raw: Vec<u8>,
+        send_after: Option<i64>,
     ) -> Result<OutboxId, KestrelError> {
         self.call(move |reply| StoreCommand::OutboxEnqueue {
             account,
             envelope,
             raw,
+            send_after,
             reply,
         })
         .await
@@ -611,6 +736,102 @@ impl StorageHandle {
     /// [`KestrelError`] on storage failure.
     pub async fn outbox_cancel(&self, id: OutboxId) -> Result<(), KestrelError> {
         self.call(move |reply| StoreCommand::OutboxCancel { id, reply })
+            .await
+    }
+
+    // ---- snooze ----
+
+    /// Enqueues a snooze entry.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn enqueue_snooze(
+        &self,
+        message: MessageId,
+        account: AccountId,
+        folder: FolderId,
+        until: i64,
+    ) -> Result<String, KestrelError> {
+        self.call(move |reply| StoreCommand::SnoozeEnqueue {
+            message,
+            account,
+            folder,
+            until,
+            reply,
+        })
+        .await
+    }
+
+    /// Returns all snoozes that have expired (due).
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn get_due_snoozes(&self) -> Result<Vec<crate::ops::SnoozeRow>, KestrelError> {
+        self.call(|reply| StoreCommand::SnoozeGetDue { reply })
+            .await
+    }
+
+    /// Removes a snooze by message id.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn remove_snooze(&self, message: MessageId) -> Result<(), KestrelError> {
+        self.call(move |reply| StoreCommand::SnoozeRemove { message, reply })
+            .await
+    }
+
+    // ---- offline mutation journal ----
+
+    /// Enqueues a mutation for later replay.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn pending_ops_enqueue(
+        &self,
+        account: AccountId,
+        op_type: OpType,
+        payload: PendingOpPayload,
+    ) -> Result<i64, KestrelError> {
+        self.call(move |reply| StoreCommand::PendingOpsEnqueue {
+            account,
+            op_type,
+            payload,
+            reply,
+        })
+        .await
+    }
+
+    /// Drains all pending ops for an account in FIFO order.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn pending_ops_drain(
+        &self,
+        account: AccountId,
+    ) -> Result<Vec<PendingOp>, KestrelError> {
+        self.call(move |reply| StoreCommand::PendingOpsDrain { account, reply })
+            .await
+    }
+
+    /// Marks a pending op as failed.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn pending_ops_mark_failed(
+        &self,
+        id: i64,
+        error: String,
+    ) -> Result<(), KestrelError> {
+        self.call(move |reply| StoreCommand::PendingOpsMarkFailed { id, error, reply })
+            .await
+    }
+
+    /// Removes a pending op after successful replay.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn pending_ops_remove(&self, id: i64) -> Result<(), KestrelError> {
+        self.call(move |reply| StoreCommand::PendingOpsRemove { id, reply })
             .await
     }
 
@@ -747,39 +968,43 @@ impl StorageService {
         let (tx, mut rx) = mpsc::channel(64);
         let cancel = CancellationToken::new();
         let token = cancel.clone();
-        tokio::spawn(async move {
-            let store = match crate::ops::Store::open(&paths, ids, clock).await {
-                Ok(store) => store,
-                Err(e) => {
-                    tracing::error!(error = %e, "service.storage failed to open");
-                    let mut rx = rx;
-                    while let Some(cmd) = rx.recv().await {
-                        reply_open_error(cmd, &e);
+        let span = tracing::info_span!("service.storage");
+        tokio::spawn(
+            async move {
+                let store = match crate::ops::Store::open(&paths, ids, clock).await {
+                    Ok(store) => store,
+                    Err(e) => {
+                        tracing::error!(error = %e, "service.storage failed to open");
+                        let mut rx = rx;
+                        while let Some(cmd) = rx.recv().await {
+                            reply_open_error(cmd, &e);
+                        }
+                        return;
                     }
-                    return;
-                }
-            };
-            let store = Arc::new(store);
-            tracing::info!("service.storage started");
-            loop {
-                tokio::select! {
-                    () = token.cancelled() => break,
-                    maybe = rx.recv() => {
-                        let Some(cmd) = maybe else { break };
-                        dispatch(&store, cmd).await;
+                };
+                let store = Arc::new(store);
+                tracing::info!("service.storage started");
+                loop {
+                    tokio::select! {
+                        () = token.cancelled() => break,
+                        maybe = rx.recv() => {
+                            let Some(cmd) = maybe else { break };
+                            dispatch(&store, cmd).await;
+                        }
                     }
                 }
+                store.db.close().await;
+                tracing::info!("service.storage stopped");
             }
-            store.db.close().await;
-            tracing::info!("service.storage stopped");
-        });
+            .instrument(span),
+        );
         (StorageHandle { tx }, cancel)
     }
 }
 
-// clippy::same_item_push / match-arms: every variant carries a differently
-// typed oneshot; the table must enumerate all of them.
-#[allow(clippy::match_same_arms)]
+// clippy::same_item_push / match-arms / too-many-lines: every variant carries a
+// differently typed oneshot; the table must enumerate all of them.
+#[allow(clippy::match_same_arms, clippy::too_many_lines)]
 fn reply_open_error(cmd: StoreCommand, err: &StorageError) {
     use StoreCommand as C;
     let err = err.clone();
@@ -808,7 +1033,13 @@ fn reply_open_error(cmd: StoreCommand, err: &StorageError) {
         C::ListMessages { reply, .. } => {
             let _ = reply.send(Err(err));
         }
+        C::ListUnifiedInbox { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
         C::GetMessage { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::GetAttachmentData { reply, .. } => {
             let _ = reply.send(Err(err));
         }
         C::SetFlags { reply, .. } => {
@@ -844,6 +1075,27 @@ fn reply_open_error(cmd: StoreCommand, err: &StorageError) {
         C::OutboxCancel { reply, .. } => {
             let _ = reply.send(Err(err));
         }
+        C::SnoozeEnqueue { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::SnoozeGetDue { reply } => {
+            let _ = reply.send(Err(err));
+        }
+        C::SnoozeRemove { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::PendingOpsEnqueue { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::PendingOpsDrain { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::PendingOpsMarkFailed { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::PendingOpsRemove { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
         C::WriteBlob { reply, .. } => {
             let _ = reply.send(Err(err));
         }
@@ -876,6 +1128,7 @@ fn reply_open_error(cmd: StoreCommand, err: &StorageError) {
 
 // clippy::too_many_lines: a flat dispatch table — one arm per command is
 // the clearest form here.
+#[instrument(skip_all)]
 #[allow(clippy::too_many_lines)]
 async fn dispatch(store: &Arc<crate::ops::Store>, cmd: StoreCommand) {
     use StoreCommand as C;
@@ -912,8 +1165,22 @@ async fn dispatch(store: &Arc<crate::ops::Store>, cmd: StoreCommand) {
         } => {
             let _ = reply.send(store.list_messages(folder, window, &sort).await);
         }
+        C::ListUnifiedInbox {
+            window,
+            sort,
+            reply,
+        } => {
+            let _ = reply.send(store.list_unified_inbox(window, &sort).await);
+        }
         C::GetMessage { id, reply } => {
             let _ = reply.send(store.get_message(id).await);
+        }
+        C::GetAttachmentData {
+            message,
+            part_key,
+            reply,
+        } => {
+            let _ = reply.send(store.get_attachment_data(message, &part_key).await);
         }
         C::SetFlags {
             messages,
@@ -948,9 +1215,14 @@ async fn dispatch(store: &Arc<crate::ops::Store>, cmd: StoreCommand) {
             account,
             envelope,
             raw,
+            send_after,
             reply,
         } => {
-            let _ = reply.send(store.outbox_enqueue(account, &envelope, &raw).await);
+            let _ = reply.send(
+                store
+                    .outbox_enqueue(account, &envelope, &raw, send_after)
+                    .await,
+            );
         }
         C::OutboxDue { reply } => {
             let _ = reply.send(store.outbox_due().await);
@@ -973,6 +1245,38 @@ async fn dispatch(store: &Arc<crate::ops::Store>, cmd: StoreCommand) {
         }
         C::OutboxCancel { id, reply } => {
             let _ = reply.send(store.outbox_cancel(id).await);
+        }
+        C::SnoozeEnqueue {
+            message,
+            account,
+            folder,
+            until,
+            reply,
+        } => {
+            let _ = reply.send(store.enqueue_snooze(message, account, folder, until).await);
+        }
+        C::SnoozeGetDue { reply } => {
+            let _ = reply.send(store.get_due_snoozes().await);
+        }
+        C::SnoozeRemove { message, reply } => {
+            let _ = reply.send(store.remove_snooze(message).await);
+        }
+        C::PendingOpsEnqueue {
+            account,
+            op_type,
+            payload,
+            reply,
+        } => {
+            let _ = reply.send(store.enqueue_pending_op(account, op_type, &payload).await);
+        }
+        C::PendingOpsDrain { account, reply } => {
+            let _ = reply.send(store.drain_pending_ops(account).await);
+        }
+        C::PendingOpsMarkFailed { id, error, reply } => {
+            let _ = reply.send(store.mark_pending_op_failed(id, &error).await);
+        }
+        C::PendingOpsRemove { id, reply } => {
+            let _ = reply.send(store.remove_pending_op(id).await);
         }
         C::WriteBlob { bytes, reply } => {
             // CAS write + registry row (refcount 0) so unreferenced blobs

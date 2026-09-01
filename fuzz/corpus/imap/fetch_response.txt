@@ -1,0 +1,7 @@
+* 1 FETCH (UID 100 FLAGS (\\Seen \\Answered) BODY[HEADER.FIELDS (FROM TO SUBJECT DATE)] {85}
+From: sender@example.com
+To: recipient@example.com
+Subject: Test message
+Date: Mon, 01 Jan 2024 00:00:00 +0000
+
+)

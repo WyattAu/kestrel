@@ -29,7 +29,7 @@ Integration tests (Docker needed): `cargo nextest run --profile integration`.
 
 ## Hard rules
 
-- **No ADR violations.** Check `docs/adr/0001`–`0008` before adding
+- **No ADR violations.** Check `docs/adr/0001`–`0012` before adding
   dependencies or touching concurrency, storage, parsing, config, errors, or
   logging.
 - **Frontends** (`kestrel-tui`, `kestrel-gui`) depend only on `kestrel-core`.
@@ -67,5 +67,11 @@ Integration tests (Docker needed): `cargo nextest run --profile integration`.
 
 ## Current status
 
-Documentation phase complete; Phase 1 (core storage & parsing) is the first
-development milestone — see `docs/roadmap.md`.
+Documentation and CI infrastructure phase complete. Phase 1 (core storage &
+parsing) is the active development milestone — see `docs/roadmap.md`.
+
+**CI pipelines:**
+- `ci.yml` — lint, test, integration, sqlx, doc, supply-chain, benches, coverage
+- `release.yml` — cross-platform release builds (linux/macos/windows) triggered on `v*` tags
+- `sbom.yml` — CycloneDX SBOM generation, attached to GitHub releases
+- `fuzz-weekly.yml` — weekly fuzz corpus regression

@@ -10,7 +10,7 @@ one core engine:
 Offline-first, IMAP/JMAP + SMTP, SQLite + Tantivy full-text search,
 zero-trust HTML rendering. Licensed under [Apache-2.0](LICENSE).
 
-Status: **design/documentation phase** — see the [roadmap](docs/roadmap.md).
+Status: **Phase 1 in progress** — see the [roadmap](docs/roadmap.md).
 
 ## Documentation
 
@@ -25,7 +25,7 @@ Status: **design/documentation phase** — see the [roadmap](docs/roadmap.md).
 | [docs/engineering-standards.md](docs/engineering-standards.md) | The bar for code, review, CI |
 | [docs/adr/](docs/adr/) | Architecture Decision Records (binding) |
 | [docs/roadmap.md](docs/roadmap.md) | Phase overview (tasks live on GitHub) |
-| [docs/sync-engine.md](docs/sync-engine.md) · [docs/testing-strategy.md](docs/testing-strategy.md) | Planned design docs (phase-gated) |
+| [docs/sync-engine.md](docs/sync-engine.md) · [docs/testing-strategy.md](docs/testing-strategy.md) | Design docs (phase-gated) |
 
 ## Build
 
@@ -38,6 +38,20 @@ cargo nextest run --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo +nightly fmt --all --check
 ```
+
+## Provider Support
+
+Kestrel supports 20+ email providers with auto-detection:
+
+| Provider | IMAP | SMTP | OAuth2 | Status |
+|----------|------|------|--------|--------|
+| Gmail | ✅ | ✅ | ✅ | Validated |
+| Outlook | ✅ | ✅ | ✅ | Ready |
+| Yahoo | ✅ | ✅ | ✅ | Ready |
+| iCloud | ✅ | ✅ | ❌ | Ready |
+| ... | ... | ... | ... | ... |
+
+See `docs/provider-compatibility.md` for the full matrix.
 
 ## Contributing
 

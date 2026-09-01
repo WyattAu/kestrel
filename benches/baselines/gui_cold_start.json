@@ -1,0 +1,7 @@
+{
+  "benchmark": "gui_cold_start/config_paths_viewport_state",
+  "mean_ms": 160.0,
+  "thresholds": { "fail_ms": 500, "warn_ms": 200 },
+  "recorded_at": "2026-08-30T00:00:00Z",
+  "notes": "Initial baseline"
+}

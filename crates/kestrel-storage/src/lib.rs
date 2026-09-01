@@ -18,6 +18,7 @@ pub mod store;
 pub use blob::BlobStore;
 pub use error::{StorageError, StorageResult};
 pub use index::{IndexDoc, IndexHandle, IndexService};
+pub use ops::{FlagPayload, OpType, PendingOp, PendingOpPayload, SnoozeRow};
 pub use search::{SearchHandle, SearchService};
 pub use store::{
     FolderRow, IngestBatch, IngestMessage, IngestStats, MessageLoad, NewAccount, NewFolder,

@@ -22,8 +22,9 @@ This document defines **how we work**. **What we build** is
 
 ## 2. Rust Conventions
 
-- **Toolchain:** pinned via `rust-toolchain.toml`. MSRV policy: latest stable
-  − 2.
+- **Toolchain:** pinned via `rust-toolchain.toml`. MSRV: the version specified
+  in `workspace.package.rust-version` in the root `Cargo.toml` (canonical
+  source of truth).
 - **Formatting:** `cargo +nightly fmt` (imports granularity). Formatting is
   never reviewed manually — CI rejects unformatted code.
 - **Clippy:** workspace `lints` table with `clippy::pedantic` enabled and a
@@ -91,8 +92,10 @@ The SLA table from `requirements.md` §8 is executable:
 
 Rules: hot paths (`messages` ingestion, list windowing, Tantivy commits) may
 not regress a benchmark > 10% without an ADR-accepted justification.
-Benchmarks run pinned (fixed CPU governor, `--disable-default-features`
-noise control) in a dedicated CI job; results posted to the PR.
+Baselines live in `benches/baselines/` (JSON) and are compared in CI; a
+> 10 % regression gate is enforced on the hot paths above. Benchmarks run
+pinned (fixed CPU governor, `--disable-default-features` noise control) in a
+dedicated CI job; results posted to the PR.
 
 ## 6. Supply Chain & Licensing
 

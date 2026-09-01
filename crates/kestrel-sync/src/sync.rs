@@ -69,6 +69,7 @@ impl SyncService {
     }
 
     /// Runs the state machine until cancellation.
+    #[tracing::instrument(skip_all, fields(account = %self.account))]
     pub async fn run(&self, cancel: CancellationToken) {
         let mut backoff = Duration::from_millis(250);
         loop {

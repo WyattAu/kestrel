@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM snooze WHERE message_id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "13e6b41577989a4bf5ce9779b1c6f6636101901c88eea72ef9457989eecac2d5"
+}

@@ -1,0 +1,8 @@
+{
+    "name": "hello-world",
+    "version": "1.0.0",
+    "author": "Kestrel Team",
+    "description": "A sample plugin that demonstrates the plugin API",
+    "capabilities": ["read_accounts", "read_folders", "subscribe_events"],
+    "api_version": "1.0"
+}

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<p>Normal paragraph</p>
+<script>alert('xss')</script>
+<script type="text/javascript">document.cookie</script>
+<SCRIPT SRC="http://evil.com/steal.js"></SCRIPT>
+<img src="x" onerror="alert(1)">
+<div onload="malicious()">content</div>
+<svg onload="alert(1)"><circle r="50"/></svg>
+<a href="javascript:void(0)">click</a>
+<a href="JAVASCRIPT:alert(1)">tricky</a>
+<form action="javascript:alert(1)"><input type="submit"></form>
+</body>
+</html>

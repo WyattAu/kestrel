@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO pending_ops (account_id, op_type, payload_json, created_at, retry_count, last_error)\n             VALUES (?1, ?2, ?3, ?4, 0, NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "77fa8ebc4f21daa6eeadb439829b71a89aaf97633ff669e57d4b6327a6720a33"
+}

@@ -77,6 +77,9 @@ pub enum KestrelError {
     /// `OAuth2` refresh failed (expired/revoked token).
     #[error("auth.oauth_refresh_failed")]
     OAuthRefreshFailed { detail: String },
+    /// `OAuth2` authorization flow failed (loopback bind, state mismatch, etc.).
+    #[error("auth.oauth_flow_failed")]
+    OAuthFlowFailed { detail: String },
     /// OS keyring unavailable / GPG fallback unusable.
     #[error("auth.keyring_unavailable")]
     KeyringUnavailable { detail: String },
@@ -154,6 +157,9 @@ pub enum KestrelError {
     /// `OpenPGP` operation failed (decrypt/verify/import).
     #[error("crypto.openpgp_failed")]
     OpenPgpFailed { detail: String },
+    /// S/MIME operation failed (sign/encrypt/decrypt/verify).
+    #[error("crypto.smime_failed")]
+    SmimeFailed { detail: String },
 
     // ---- outbox -------------------------------------------------------------------
     /// Retry budget exhausted; draft preserved.
@@ -167,6 +173,11 @@ pub enum KestrelError {
     /// Invariant violated; owning service restarts (ADR 0004).
     #[error("engine.bug")]
     Bug { detail: String },
+
+    // ---- feature gate ---------------------------------------------------------------
+    /// Feature is not yet implemented; stub returns this for CalDAV/CardDAV ops.
+    #[error("feature.not_yet_available")]
+    FeatureNotYetAvailable { feature: String },
 }
 
 /// Kinds of parser hard limits (threat model §4.2).
@@ -196,6 +207,7 @@ impl KestrelError {
             | Self::UnknownKey { .. }
             | Self::CredentialsRejected
             | Self::OAuthRefreshFailed { .. }
+            | Self::OAuthFlowFailed { .. }
             | Self::KeyringUnavailable { .. }
             | Self::CredentialsRejectedSaslx { .. }
             | Self::DbCorrupt { .. }
@@ -218,10 +230,11 @@ impl KestrelError {
             | Self::NotFound { .. }
             | Self::ParseMalformed { .. }
             | Self::ParseLimit { .. }
-            | Self::RetryExhausted { .. } => RecoveryClass::Permanent,
-            Self::OpenPgpUnsupported { .. } | Self::OpenPgpFailed { .. } => {
-                RecoveryClass::Permanent
-            }
+            | Self::RetryExhausted { .. }
+            | Self::OpenPgpUnsupported { .. }
+            | Self::OpenPgpFailed { .. }
+            | Self::SmimeFailed { .. }
+            | Self::FeatureNotYetAvailable { .. } => RecoveryClass::Permanent,
             Self::MalformedCommand { .. } | Self::Bug { .. } => RecoveryClass::Bug,
             Self::UidValidityChanged { .. } => RecoveryClass::Reconciliation,
         }
@@ -241,6 +254,7 @@ impl KestrelError {
             Self::CredentialsRejected => "auth.credentials_rejected",
             Self::CredentialsRejectedSaslx { .. } => "auth.sasl",
             Self::OAuthRefreshFailed { .. } => "auth.oauth_refresh_failed",
+            Self::OAuthFlowFailed { .. } => "auth.oauth_flow_failed",
             Self::KeyringUnavailable { .. } => "auth.keyring_unavailable",
             Self::TlsHandshake { .. } => "transport.tls_handshake",
             Self::ConnectionLost { .. } => "transport.connection_lost",
@@ -262,9 +276,23 @@ impl KestrelError {
             Self::OpenPgpUnsupported { .. } => "crypto.openpgp_unsupported",
             Self::OpenPgpFailed { .. } => "crypto.openpgp_failed",
             Self::SigningFailed { .. } => "crypto.signing_failed",
+            Self::SmimeFailed { .. } => "crypto.smime_failed",
             Self::RetryExhausted { .. } => "outbox.retry_exhausted",
             Self::DraftInvalid { .. } => "outbox.draft_invalid",
             Self::Bug { .. } => "engine.bug",
+            Self::FeatureNotYetAvailable { .. } => "feature.not_yet_available",
+        }
+    }
+
+    /// User-facing message keyed by recovery class (`docs/error-taxonomy.md`).
+    #[must_use]
+    pub fn user_message(&self) -> String {
+        match self.recovery_class() {
+            RecoveryClass::Retryable => format!("Connection issue: {self}. Retrying…"),
+            RecoveryClass::UserAction => format!("Action needed: {self}"),
+            RecoveryClass::Permanent => format!("Failed: {self}"),
+            RecoveryClass::Bug => format!("Internal error: {self}. Please report this."),
+            RecoveryClass::Reconciliation => "Mailbox structure changed. Resyncing…".to_string(),
         }
     }
 }
@@ -288,6 +316,7 @@ mod tests {
             KestrelError::CredentialsRejected,
             KestrelError::CredentialsRejectedSaslx { detail: "d".into() },
             KestrelError::OAuthRefreshFailed { detail: "d".into() },
+            KestrelError::OAuthFlowFailed { detail: "d".into() },
             KestrelError::KeyringUnavailable { detail: "d".into() },
             KestrelError::TlsHandshake { detail: "d".into() },
             KestrelError::ConnectionLost { detail: "d".into() },
@@ -321,10 +350,14 @@ mod tests {
             KestrelError::OpenPgpUnsupported { detail: "d".into() },
             KestrelError::OpenPgpFailed { detail: "d".into() },
             KestrelError::SigningFailed { detail: "d".into() },
+            KestrelError::SmimeFailed { detail: "d".into() },
             KestrelError::RetryExhausted { attempts: 12 },
             KestrelError::DraftInvalid { detail: "d".into() },
             KestrelError::Bug {
                 detail: "invariant".into(),
+            },
+            KestrelError::FeatureNotYetAvailable {
+                feature: "CalDAV".into(),
             },
         ];
         for err in &samples {

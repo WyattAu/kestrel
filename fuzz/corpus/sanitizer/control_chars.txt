@@ -1,0 +1,31 @@
+Normal text with  null substitute
+Text with  STX
+Text with  ETX
+Text with  EOT
+Text with  ENQ
+Text with  ACK
+Text with  BEL
+Text with  BS
+Text with  VT
+Text with  FF
+Text with  SO
+Text with  SI
+Text with  DLE
+Text with  DC1
+Text with  DC2
+Text with  DC3
+Text with  DC4
+Text with  NAK
+Text with  SYN
+Text with  ETB
+Text with  CAN
+Text with  EM
+Text with  SUB
+Text with  FS
+Text with  GS
+Text with  RS
+Text with  US
+Tab character 	 is allowed
+Newline 
+ is allowed
+Carriage return  is allowed

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE pending_ops\n             SET retry_count = retry_count + 1, last_error = ?2\n             WHERE id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "fc8065a05bd698e678b32f628e5d2a1216de87c2024625b0e4be0e92d43005e5"
+}

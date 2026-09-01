@@ -233,6 +233,7 @@ async fn integration_sync_service_full_cycle() {
             provider: kestrel_core::protocol::Provider::Generic,
             protocol: kestrel_core::protocol::MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -327,6 +328,7 @@ async fn integration_outbox_flush_through_smtp_and_append() {
             provider: kestrel_core::protocol::Provider::Generic,
             protocol: kestrel_core::protocol::MailProtocol::Imap,
             auth_kind: "password".into(),
+            host: String::new(),
         })
         .await
         .unwrap();
@@ -351,13 +353,19 @@ async fn integration_outbox_flush_through_smtp_and_append() {
             references: vec![],
             body_markdown: "**hello** outbox".into(),
             attachments: vec![],
+            pgp_sign: false,
+            pgp_encrypt: false,
+            smime_sign: false,
+            smime_encrypt: false,
+            send_after: None,
+            priority: kestrel_core::protocol::Priority::Normal,
         },
         &kestrel_core::ids::SystemIdGenerator,
         &kestrel_core::clock::SystemClock,
     )
     .unwrap();
     let id = storage
-        .outbox_enqueue(account, envelope, raw)
+        .outbox_enqueue(account, envelope, raw, None)
         .await
         .unwrap();
 
@@ -411,7 +419,7 @@ async fn integration_credential_service_roundtrip() {
         eprintln!("skipping: KESTREL_INTEGRATION not set");
         return;
     }
-    let svc = CredentialService::new(InMemoryStore::new());
+    let svc = CredentialService::new(std::sync::Arc::new(InMemoryStore::new()));
     let account = kestrel_core::ids::AccountId::from_uuid(uuid::Uuid::now_v7());
     svc.set_password(account, &SecretString::new("s3cret".into()))
         .unwrap();

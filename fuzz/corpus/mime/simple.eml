@@ -1,0 +1,9 @@
+From: sender@example.com
+To: recipient@example.com
+Subject: Simple test email
+Date: Mon, 01 Jan 2024 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: 7bit
+
+Hello, this is a simple test email body.

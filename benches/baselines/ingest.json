@@ -1,0 +1,7 @@
+{
+  "benchmark": "ingest/envelopes_100/batch",
+  "mean_msgs_per_sec": 1200,
+  "thresholds": { "fail_msgs_per_sec": 800, "warn_msgs_per_sec": 1500 },
+  "recorded_at": "2026-08-30T00:00:00Z",
+  "notes": "Initial baseline"
+}

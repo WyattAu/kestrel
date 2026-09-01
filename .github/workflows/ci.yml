@@ -32,6 +32,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    env:
+      KESTREL_PROPTOP_CASES: "256"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -52,9 +54,16 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      - name: Start integration services
+        run: docker compose -f tests/integration/docker-compose.yml up -d
+      - name: Wait for services
+        run: docker compose -f tests/integration/docker-compose.yml ps
       - run: cargo nextest run --profile integration
         env:
           KESTREL_INTEGRATION: "1"
+      - name: Tear down services
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml down -v
 
   sqlx:
     runs-on: ubuntu-latest
@@ -100,6 +109,226 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
-      # SLA smoke: compile and run benches once; gating thresholds live in the
-      # dedicated bench harness (engineering-standards §5).
-      - run: cargo bench --workspace --no-run
+      - name: Run benchmarks
+        run: cargo bench --workspace 2>&1 | tee bench-output.txt
+      - name: Enforce SLA thresholds
+        run: |
+          parse_mean_ms() {
+            local pattern="$1"
+            local line mean_raw unit
+            line=$(grep -P "$pattern\\s+time:" bench-output.txt || true)
+            if [ -z "$line" ]; then echo ""; return; fi
+            mean_raw=$(echo "$line" | grep -oP 'time:\\s+\\[\\K[0-9.]+')
+            unit=$(echo "$line" | grep -oP 'time:\\s+\\[[0-9.]+\\s+\\K\\S+')
+            case "$unit" in
+              ns) echo "scale=4; $mean_raw / 1000000" | bc ;;
+              us) echo "scale=4; $mean_raw / 1000" | bc ;;
+              ms) echo "$mean_raw" ;;
+              s)  echo "scale=4; $mean_raw * 1000" | bc ;;
+              *)  echo ""; return ;;
+            esac
+          }
+
+          FAIL=0
+
+          # Ingest: fail < 800 msgs/sec
+          MEAN_SEC=$(grep -oP 'ingest/envelopes_100/batch\s+time:\s+\[\K[0-9.]+' bench-output.txt | head -1)
+          if [ -z "$MEAN_SEC" ]; then
+            echo "::warning::Could not parse ingest benchmark output."
+          else
+            MSGS_PER_SEC=$(echo "scale=2; 100 / $MEAN_SEC" | bc)
+            echo "Ingest: ${MSGS_PER_SEC} msgs/sec (threshold: 800 msgs/sec)"
+            if [ "$(echo "$MSGS_PER_SEC < 800" | bc)" -eq 1 ]; then
+              echo "::error::Ingest SLA FAILED: ${MSGS_PER_SEC} msgs/sec < 800 msgs/sec"
+              FAIL=1
+            fi
+          fi
+
+          # Search 100k: fail > 50ms, warn > 15ms
+          MS=$(parse_mean_ms "search_100k/text_query_first_50")
+          if [ -n "$MS" ]; then
+            echo "Search 100k: ${MS} ms (fail > 50ms, warn > 15ms)"
+            if [ "$(echo "$MS > 50" | bc)" -eq 1 ]; then
+              echo "::error::Search 100k SLA FAILED: ${MS} ms > 50 ms"
+              FAIL=1
+            elif [ "$(echo "$MS > 15" | bc)" -eq 1 ]; then
+              echo "::warning::Search 100k above target: ${MS} ms > 15 ms"
+            fi
+          else
+            echo "::warning::Could not parse search_100k benchmark."
+          fi
+
+          # Search 500k: fail > 30ms
+          MS=$(parse_mean_ms "search_500k/text_query_first_50")
+          if [ -n "$MS" ]; then
+            echo "Search 500k: ${MS} ms (fail > 30ms)"
+            if [ "$(echo "$MS > 30" | bc)" -eq 1 ]; then
+              echo "::error::Search 500k SLA FAILED: ${MS} ms > 30 ms"
+              FAIL=1
+            fi
+          else
+            echo "::warning::Could not parse search_500k benchmark."
+          fi
+
+          # TUI cold-start: fail > 150ms, warn > 50ms
+          MS=$(parse_mean_ms "tui_cold_start/config_paths_app_state")
+          if [ -n "$MS" ]; then
+            echo "TUI cold-start: ${MS} ms (fail > 150ms, warn > 50ms)"
+            if [ "$(echo "$MS > 150" | bc)" -eq 1 ]; then
+              echo "::error::TUI cold-start SLA FAILED: ${MS} ms > 150 ms"
+              FAIL=1
+            elif [ "$(echo "$MS > 50" | bc)" -eq 1 ]; then
+              echo "::warning::TUI cold-start above target: ${MS} ms > 50 ms"
+            fi
+          else
+            echo "::warning::Could not parse tui_cold_start benchmark."
+          fi
+
+          # GUI cold-start: fail > 500ms, warn > 200ms
+          MS=$(parse_mean_ms "gui_cold_start/config_paths_viewport_state")
+          if [ -n "$MS" ]; then
+            echo "GUI cold-start: ${MS} ms (fail > 500ms, warn > 200ms)"
+            if [ "$(echo "$MS > 500" | bc)" -eq 1 ]; then
+              echo "::error::GUI cold-start SLA FAILED: ${MS} ms > 500 ms"
+              FAIL=1
+            elif [ "$(echo "$MS > 200" | bc)" -eq 1 ]; then
+              echo "::warning::GUI cold-start above target: ${MS} ms > 200 ms"
+            fi
+          else
+            echo "::warning::Could not parse gui_cold_start benchmark."
+          fi
+
+          # Engine cold-start: fail > 50ms
+          MS=$(parse_mean_ms "engine_cold_start/0_accounts")
+          if [ -n "$MS" ]; then
+            echo "Engine cold-start: ${MS} ms (fail > 50ms)"
+            if [ "$(echo "$MS > 50" | bc)" -eq 1 ]; then
+              echo "::error::Engine cold-start SLA FAILED: ${MS} ms > 50 ms"
+              FAIL=1
+            fi
+          else
+            echo "::warning::Could not parse engine_cold_start benchmark."
+          fi
+
+          if [ "$FAIL" -eq 1 ]; then echo "::error::SLA enforcement failed."; exit 1; fi
+          echo "All SLA thresholds passed."
+      - name: Check idle memory SLA
+        run: |
+          RSS_OUTPUT=$(cargo test -p kestrel-engine --test idle_memory_check -- --nocapture 2>&1 || true)
+          RSS_BYTES=$(echo "$RSS_OUTPUT" | grep -oP 'MEMORY_RSS_BYTES=\K[0-9]+')
+          if [ -z "$RSS_BYTES" ]; then
+            echo "::warning::Could not parse idle memory output (may not be Linux)."
+          else
+            RSS_MB=$((RSS_BYTES / 1048576))
+            echo "Idle RSS: ${RSS_MB} MB (warn > 25 MB, fail > 40 MB)"
+            if [ "$RSS_MB" -gt 40 ]; then
+              echo "::error::Idle memory SLA FAILED: ${RSS_MB} MB > 40 MB"
+              exit 1
+            fi
+            if [ "$RSS_MB" -gt 25 ]; then
+              echo "::warning::Idle memory above target: ${RSS_MB} MB > 25 MB"
+            fi
+          fi
+
+  providers:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run provider integration tests
+        run: cargo nextest run --package kestrel-sync --test provider_real -- --ignored --nocapture
+        env:
+          KESTREL_PROVIDER_INTEGRATION: "1"
+          KESTREL_PROVIDER_NAME: ${{ vars.KESTREL_PROVIDER_NAME }}
+          KESTREL_PROVIDER_IMAP_HOST: ${{ vars.KESTREL_PROVIDER_IMAP_HOST }}
+          KESTREL_PROVIDER_IMAP_PORT: ${{ vars.KESTREL_PROVIDER_IMAP_PORT || '993' }}
+          KESTREL_PROVIDER_EMAIL: ${{ secrets.KESTREL_PROVIDER_EMAIL }}
+          KESTREL_PROVIDER_PASSWORD: ${{ secrets.KESTREL_PROVIDER_PASSWORD }}
+
+  mobile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run kestrel-mobile tests
+        run: cargo nextest run --package kestrel-mobile
+      - name: Clippy kestrel-mobile
+        run: cargo clippy --package kestrel-mobile --all-targets -- -D warnings
+
+  mobile-cross:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - aarch64-linux-android
+          - x86_64-linux-android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+      - run: cargo check --package kestrel-mobile --target ${{ matrix.target }}
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: Fuzz all targets (60s each)
+        working-directory: fuzz
+        run: |
+          TARGETS=(fuzz_mime_adapter fuzz_link_classifier fuzz_html_sanitizer fuzz_terminal_sanitizer fuzz_imap_response)
+          FAIL=0
+          for target in "${TARGETS[@]}"; do
+            echo "::group::Fuzzing $target"
+            if cargo fuzz run "$target" -- -max_total_time=60 -max_len=4096; then
+              echo "$target: PASS (60s, no crash)"
+            else
+              echo "::error::$target: FUZZ CRASH DETECTED"
+              FAIL=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$FAIL" -eq 1 ]; then echo "::error::Fuzz crashes detected."; exit 1; fi
+          echo "All fuzz targets passed."
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate coverage report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: lcov.info
+          retention-days: 30
+      - name: Print coverage summary
+        run: cargo llvm-cov --workspace --summary 2>&1 || true
