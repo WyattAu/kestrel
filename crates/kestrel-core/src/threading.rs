@@ -138,7 +138,7 @@ pub fn thread_messages(inputs: &[ThreadInput]) -> Vec<ThreadAssignment> {
         let key = root_key
             .entry(root)
             .or_insert_with(|| root_thread_key(inputs, root, &mut uf))
-            .clone();
+            .to_owned();
         assignments.push(ThreadAssignment {
             id: input.id,
             thread_key: key,
