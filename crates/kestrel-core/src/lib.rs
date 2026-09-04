@@ -7,8 +7,9 @@
 //! architecture §8), the `MimeParser` trait and `mail-parser` adapter
 //! ([`mime`], ADR 0002), the terminal/HTML sanitizers ([`sanitizer`],
 //! threat model §4.4–4.6), the link classifier ([`links`], threat model
-//! §4.5), the pure JWZ-lite threading algorithm ([`threading`],
-//! `docs/schema.md` §3.4), and shared test fixtures ([`testkit`]).
+//! §4.5), the pure JWZ-lite threading algorithm ([`threading`], delegated
+//! to `mailkit::threading`, `docs/schema.md` §3.4), and shared test
+//! fixtures ([`testkit`]).
 //!
 //! This crate is dependency-light by design: no UI, no storage backends, no
 //! network clients (architecture §2).

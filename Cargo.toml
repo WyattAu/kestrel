@@ -78,6 +78,11 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 # MIME parsing (ADR 0002); full_encoding = legacy charsets incl. Shift-JIS/
 # GB2312 (requirements §4.1)
 mail-parser = { version = "0.11", features = ["full_encoding"] }
+# Extracted kestrel email primitives. threading is what core re-exports;
+# `resend` is forced on ONLY because 0.2.0 ships an ungated ResendProvider
+# that references reqwest (upstream gating bug) — default TLS stays off the
+# moment mailkit fixes the gate.
+mailkit = { version = "0.2", default-features = false, features = ["resend"] }
 encoding_rs = "0.8"
 # HTML sanitizer for rendered mail (ADR 0013: defense-in-depth alongside the
 # webview CSP sandbox)

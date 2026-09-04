@@ -22,6 +22,7 @@ hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 mail-parser = { workspace = true }
+mailkit = { workspace = true }
 ammonia = { workspace = true }
 pulldown-cmark = { workspace = true }
 url = { workspace = true }

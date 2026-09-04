@@ -206,12 +206,12 @@ impl StoreMessagesExt for Store {
             .messages
             .iter()
             .map(|m| ThreadInput {
-                id: Mid::from_uuid(self.ids.next_id()),
+                id: Mid::from_uuid(self.ids.next_id()).to_string(),
                 message_id: m.parsed.message_id.clone(),
                 in_reply_to: m.parsed.in_reply_to.clone(),
                 references: m.parsed.references.clone(),
                 subject: m.parsed.subject.clone(),
-                date: m.internal_date,
+                timestamp: m.internal_date,
             })
             .collect();
         let assignments = thread_messages(&inputs);
