@@ -53,6 +53,18 @@ Kestrel supports 20+ email providers with auto-detection:
 
 See `docs/provider-compatibility.md` for the full matrix.
 
+## Search stack
+
+Kestrel uses [tantivy](https://github.com/quickwit-oss/tantivy) **0.26** directly
+(`crates/kestrel-storage`): fixed mail schema (stemmed/raw text, u64 folder/account
+facets, i64 date fast field), single-writer batched commits, and fast-field-ordered
+hits. This is deliberately version-aligned with
+[tantivy-helper 0.2](https://crates.io/crates/tantivy-helper) (also tantivy 0.26).
+Migrating kestrel onto tantivy-helper's `SearchEngine`/`QueryBuilder` was assessed
+and rejected for now — its API does not yet express fast-field ordering, custom
+per-field tokenizers, range/fuzzy-across-fields queries, or writer heap/commit
+batching control. Migration is future work pending helper API growth.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) (workflow) and
