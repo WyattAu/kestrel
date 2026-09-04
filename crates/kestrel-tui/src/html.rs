@@ -127,11 +127,11 @@ fn push_line(lines: &mut Vec<RenderedLine>, current: &mut RenderedLine, width: u
     current.text = decode_entities(&current.text);
     let is_quoted = current.is_quoted;
     // Word-wrap at width.
-    let text = current.text.clone();
+    let text = std::mem::take(&mut current.text);
     if text.len() <= width {
         lines.push(RenderedLine {
             text,
-            links: current.links.clone(),
+            links: std::mem::take(&mut current.links),
             is_quoted,
         });
     } else {

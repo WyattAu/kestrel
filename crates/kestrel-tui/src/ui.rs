@@ -65,7 +65,7 @@ fn focus_style(focused: bool) -> Style {
 
 fn draw_folder_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
     let focused = state.focus == Focus::Folders;
-    let mut items: Vec<ListItem<'_>> = Vec::new();
+    let mut items: Vec<ListItem<'_>> = Vec::with_capacity(state.accounts.len() + state.folders.len());
 
     for (i, acc) in state.accounts.iter().enumerate() {
         let color = acc
@@ -85,7 +85,7 @@ fn draw_folder_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
         };
         items.push(ListItem::new(Line::from(vec![
             Span::styled("● ", Style::default().fg(color)),
-            Span::raw(acc.name.clone()),
+            Span::raw(acc.name.as_str()),
             indicator,
         ])));
         if items.len() > state.selected_account + 1 {
@@ -137,7 +137,7 @@ fn draw_folder_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
 
 fn draw_list_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
     let focused = state.focus == Focus::List;
-    let mut items: Vec<ListItem<'_>> = Vec::new();
+    let mut items: Vec<ListItem<'_>> = Vec::with_capacity(state.page.items.len());
     let mut last_group: Option<&str> = None;
     for m in &state.page.items {
         // Insert date group header when the group changes.
@@ -156,9 +156,9 @@ fn draw_list_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
         let from = m
             .from
             .first()
-            .map(|a| a.name.clone().unwrap_or_else(|| a.email.clone()))
+            .map(|a| a.name.as_deref().unwrap_or(&a.email))
             .unwrap_or_default();
-        let subject = m.subject.clone().unwrap_or_else(|| "(no subject)".into());
+        let subject = m.subject.as_deref().unwrap_or("(no subject)");
         let date = format_date(m.internal_date);
         items.push(ListItem::new(Line::from(vec![
             Span::styled(flags.to_string(), Style::default().fg(Color::Yellow)),
@@ -207,7 +207,7 @@ fn draw_preview_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
         .border_style(focus_style(focused));
 
     if let Some(view) = &state.preview {
-        let mut lines: Vec<Line<'_>> = Vec::new();
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(8 + view.body_plain.as_ref().map_or(0, |b| b.lines().count()));
         // Header.
         lines.push(Line::from(Span::styled(
             format!(
@@ -215,7 +215,7 @@ fn draw_preview_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
                 view.summary
                     .from
                     .first()
-                    .map(|a| { a.name.clone().unwrap_or_else(|| a.email.clone()) })
+                    .map(|a| { a.name.as_deref().unwrap_or(&a.email) })
                     .unwrap_or_default()
             ),
             Style::default().fg(Color::Blue),
@@ -223,7 +223,7 @@ fn draw_preview_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
         lines.push(Line::from(Span::styled(
             format!(
                 "Subject: {}",
-                view.summary.subject.clone().unwrap_or_default()
+                view.summary.subject.as_deref().unwrap_or_default()
             ),
             Style::default().add_modifier(Modifier::BOLD),
         )));
@@ -381,7 +381,7 @@ pub fn draw_modal(f: &mut Frame<'_>, state: &AppState) {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(*label, Style::default().fg(Color::Blue)),
-                    Span::raw((*value).clone()),
+                    Span::raw(*value),
                     Span::styled(cursor, Style::default().fg(Color::Yellow)),
                 ]));
             }
@@ -400,7 +400,7 @@ pub fn draw_modal(f: &mut Frame<'_>, state: &AppState) {
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled("/search: ", Style::default().fg(Color::Cyan)),
-                    Span::raw(state.search_input.clone()),
+                    Span::raw(state.search_input.as_str()),
                     Span::styled("_", Style::default().fg(Color::DarkGray)),
                 ]))
                 .block(Block::default().borders(Borders::ALL)),
@@ -442,8 +442,7 @@ pub fn draw_modal(f: &mut Frame<'_>, state: &AppState) {
                         state
                             .command_input
                             .strip_prefix(':')
-                            .unwrap_or(&state.command_input)
-                            .to_owned(),
+                            .unwrap_or(&state.command_input),
                     ),
                     Span::styled("_", Style::default().fg(Color::DarkGray)),
                 ]))
@@ -502,8 +501,8 @@ fn draw_snooze_modal(f: &mut Frame<'_>, state: &AppState) {
             Style::default().fg(Color::White)
         };
         lines.push(Line::from(vec![
-            Span::styled(prefix.to_string(), style),
-            Span::styled(opt.to_string(), style),
+            Span::styled(prefix, style),
+            Span::styled(*opt, style),
         ]));
     }
 
