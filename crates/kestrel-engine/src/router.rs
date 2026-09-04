@@ -896,18 +896,18 @@ impl EngineRouter {
             std::env::var("KESTREL_OAUTH2_CLIENT_ID").unwrap_or_else(|_| "kestrel-desktop".into());
         let oauth_provider = match provider {
             kestrel_core::protocol::Provider::Gmail => {
-                kestrel_crypto::oauth::OAuthProvider::gmail(&client_id)
+                kestrel_crypto::oauth::MailProvider::gmail(&client_id)
             }
             kestrel_core::protocol::Provider::Outlook => {
                 let tenant =
                     std::env::var("KESTREL_OAUTH2_TENANT").unwrap_or_else(|_| "common".into());
-                kestrel_crypto::oauth::OAuthProvider::outlook(&client_id, &tenant)
+                kestrel_crypto::oauth::MailProvider::outlook(&client_id, &tenant)
             }
             kestrel_core::protocol::Provider::Yahoo => {
-                kestrel_crypto::oauth::OAuthProvider::yahoo(&client_id)
+                kestrel_crypto::oauth::MailProvider::yahoo(&client_id)
             }
             kestrel_core::protocol::Provider::Fastmail => {
-                kestrel_crypto::oauth::OAuthProvider::fastmail(&client_id)
+                kestrel_crypto::oauth::MailProvider::fastmail(&client_id)
             }
             _ => {
                 return Err(KestrelError::DraftInvalid {
@@ -916,7 +916,7 @@ impl EngineRouter {
             }
         };
         let (flow, _handle) = kestrel_crypto::oauth::start_flow(
-            oauth_provider,
+            &oauth_provider,
             None,
             std::time::Duration::from_mins(5),
         )

@@ -112,6 +112,8 @@ keyring = { version = "3", features = ["sync-secret-service", "windows-native", 
 zeroize = { version = "1", features = ["zeroize_derive"] }
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["simple"] }
+# Extracted kestrel OAuth2/OIDC primitives (PKCE/loopback/token/providers).
+oauth-toolkit = "0.2"
 
 # Testing
 proptest = "1"

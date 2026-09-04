@@ -1,17 +1,26 @@
-//! `OAuth2` flows (requirements §2.3): loopback redirect capture on
-//! `127.0.0.1:<ephemeral>` with single-use `state` and PKCE (RFC 7636,
-//! S256), token exchange + refresh via the provider's endpoints, and
-//! token persistence through [`CredentialService`].
+//! `OAuth2` flows (requirements §2.3), delegated to `oauth-toolkit`
+//! (extracted crate): loopback redirect capture on `127.0.0.1:<ephemeral>`
+//! with single-use `state` and PKCE (RFC 7636, S256), token exchange +
+//! refresh via the provider's endpoints, and token persistence through
+//! [`CredentialService`].
+//!
+//! Kestrel's boundary wraps the toolkit's plain-`String` tokens in
+//! [`SecretString`] ([`TokenSet`], [`persist_refresh`]) and maps toolkit
+//! errors onto [`CryptoError::OAuth`]. Provider presets are the toolkit's
+//! [`MailProvider`]; unlike the former flat scope list it splits
+//! `imap_scopes`/`smtp_scopes`/`extra_scopes` — authorization requests use
+//! the de-duplicated union (`MailProvider::authorization_scopes`).
 //!
 //! The loopback server binds loopback only, serves exactly one redirect,
-//! then shuts down (threat model §4.8).
+//! then shuts down (threat model §4.8). Flow/algorithm coverage lives
+//! upstream in `oauth-toolkit`; this module keeps the integration-level
+//! tests (preset URL building, capture delegation, refresh roundtrip
+//! through `CredentialService`).
 
-use std::{fmt::Write as _, net::SocketAddr};
+use std::time::Duration;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use kestrel_core::secrets::SecretString;
-use rand::RngCore;
-use sha2::{Digest, Sha256};
+pub use oauth_toolkit::{providers::MailProvider, token::TokenResponse};
 use tracing::instrument;
 
 use crate::{
@@ -19,104 +28,15 @@ use crate::{
     error::{CryptoError, CryptoResult},
 };
 
-/// Provider endpoints and scopes.
-#[derive(Clone, Debug)]
-pub struct OAuthProvider {
-    /// Authorization endpoint.
-    pub auth_url: String,
-    /// Token endpoint.
-    pub token_url: String,
-    /// Requested scopes.
-    pub scopes: Vec<String>,
-    /// `OAuth2` client id (Kestrel's registered app).
-    pub client_id: String,
-}
-
-impl OAuthProvider {
-    /// Google Workspace preset (requirements §2.3).
-    #[must_use]
-    pub fn gmail(client_id: &str) -> Self {
-        Self {
-            auth_url: "https://accounts.google.com/o/oauth2/v2/auth".into(),
-            token_url: "https://oauth2.googleapis.com/token".into(),
-            scopes: vec![
-                "https://mail.google.com/".into(),
-                "openid".into(),
-                "email".into(),
-            ],
-            client_id: client_id.to_owned(),
-        }
-    }
-
-    /// Microsoft 365 preset.
-    #[must_use]
-    pub fn outlook(client_id: &str, tenant: &str) -> Self {
-        Self {
-            auth_url: format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"),
-            token_url: format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"),
-            scopes: vec![
-                "https://outlook.office.com/IMAP.AccessAsUser.All".into(),
-                "https://outlook.office.com/SMTP.Send".into(),
-                "offline_access".into(),
-            ],
-            client_id: client_id.to_owned(),
-        }
-    }
-
-    /// Yahoo/AOL preset.
-    #[must_use]
-    pub fn yahoo(client_id: &str) -> Self {
-        Self {
-            auth_url: "https://api.login.yahoo.com/oauth2/request_auth".into(),
-            token_url: "https://api.login.yahoo.com/oauth2/get_token".into(),
-            scopes: vec!["mail-w".into()],
-            client_id: client_id.to_owned(),
-        }
-    }
-
-    /// Fastmail preset.
-    #[must_use]
-    pub fn fastmail(client_id: &str) -> Self {
-        Self {
-            auth_url: "https://app.fastmail.com/oauth/authorize".into(),
-            token_url: "https://api.fastmail.com/oauth/token".into(),
-            scopes: vec![
-                "https://www.fastmail.com/dev/protocolIMAP".into(),
-                "https://www.fastmail.com/dev/protocolSMTP".into(),
-            ],
-            client_id: client_id.to_owned(),
-        }
+impl From<oauth_toolkit::loopback::LoopbackError> for CryptoError {
+    fn from(err: oauth_toolkit::loopback::LoopbackError) -> Self {
+        CryptoError::OAuth(err.to_string())
     }
 }
 
-/// PKCE pair (RFC 7636 §4.1/4.2).
-#[derive(Clone)]
-pub struct Pkce {
-    /// Unhashed verifier (kept client-side only).
-    verifier: String,
-    /// S256 challenge sent in the authorization request.
-    challenge: String,
-}
-
-impl Pkce {
-    /// Generates a verifier/challenge pair.
-    #[must_use]
-    pub fn generate() -> Self {
-        let mut bytes = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
-        let verifier = URL_SAFE_NO_PAD.encode(bytes);
-        let digest = Sha256::digest(verifier.as_bytes());
-        let challenge = URL_SAFE_NO_PAD.encode(digest);
-        Self {
-            verifier,
-            challenge,
-        }
-    }
-
-    /// The S256 challenge (for the auth URL).
-    #[must_use]
-    pub fn challenge(&self) -> &str {
-        &self.challenge
+impl From<oauth_toolkit::token::TokenError> for CryptoError {
+    fn from(err: oauth_toolkit::token::TokenError) -> Self {
+        CryptoError::OAuth(err.to_string())
     }
 }
 
@@ -131,228 +51,75 @@ pub struct TokenSet {
     pub expires_at: i64,
 }
 
-/// Single-use state token.
-fn fresh_state() -> String {
-    let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-/// Builds the browser authorization URL (RFC 8252 style; the user opens it
-/// externally) and returns it with the state + PKCE pair needed for capture.
-#[must_use]
-pub fn build_authorization_url(
-    provider: &OAuthProvider,
-    redirect_port: u16,
-    state: &str,
-    pkce: &Pkce,
-    login_hint: Option<&str>,
-) -> String {
-    let mut url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&scope={}&code_challenge={}&code_challenge_method=S256",
-        provider.auth_url,
-        provider.client_id,
-        urlencoding_of(&format!("http://127.0.0.1:{redirect_port}/cb")),
-        state,
-        urlencoding_of(&provider.scopes.join(" ")),
-        pkce.challenge(),
-    );
-    if let Some(hint) = login_hint {
-        let _ = write!(url, "&login_hint={}", urlencoding_of(hint));
+fn secret_set(set: oauth_toolkit::token::TokenSet) -> TokenSet {
+    TokenSet {
+        access_token: SecretString::new(set.access_token),
+        refresh_token: set.refresh_token.map(SecretString::new),
+        expires_at: set.expires_at,
     }
-    url
 }
 
-fn urlencoding_of(s: &str) -> String {
-    // Minimal percent-encoding for query components.
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(char::from(b));
-            }
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len() + 1
-            && i + 2 < bytes.len()
-            && let Ok(v) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"),
-                16,
-            )
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// A started flow: authorization URL + the capture future.
+/// A started flow: the authorization URL plus the capture handle.
 pub struct AuthorizationFlow {
     /// URL the user opens in a browser.
     pub url: String,
-    /// PKCE pair (verifier needed for the exchange).
-    pub pkce: Pkce,
 }
 
-/// Starts the flow: generates PKCE, spins the capture server, returns the
-/// URL plus the join handle yielding the code.
+/// Starts the flow: binds an ephemeral loopback port, builds the
+/// authorization URL (PKCE S256 + single-use `state`), and spawns the
+/// redirect capture on a blocking worker. The handle yields the code once
+/// the browser redirect arrives.
 ///
 /// # Errors
 /// [`CryptoError::OAuth`] on loopback bind failure.
 #[instrument(skip_all)]
-#[allow(clippy::type_complexity)]
 pub async fn start_flow(
-    provider: OAuthProvider,
+    provider: &MailProvider,
     login_hint: Option<String>,
-    timeout: std::time::Duration,
+    timeout: Duration,
 ) -> CryptoResult<(
     AuthorizationFlow,
-    tokio::task::JoinHandle<CryptoResult<(String, Pkce)>>,
+    tokio::task::JoinHandle<CryptoResult<String>>,
 )> {
-    let pkce = Pkce::generate();
-    // Bind the port now so the URL is stable for the browser.
-    let state = fresh_state();
-    let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
-        .await
-        .map_err(|e| CryptoError::OAuth(format!("loopback bind: {e}")))?;
-    let port = listener
-        .local_addr()
-        .map_err(|e| CryptoError::OAuth(format!("loopback addr: {e}")))?
-        .port();
-    let url = build_authorization_url(&provider, port, &state, &pkce, login_hint.as_deref());
-
-    let provider_clone = provider.clone();
-    let pkce_for_capture = pkce.clone();
-    let handle = tokio::spawn(async move {
-        let (code, _port) = capture_on(
-            listener,
-            &provider_clone,
-            &state,
-            &pkce_for_capture,
-            timeout,
-        )
-        .await?;
-        Ok((code, pkce_for_capture))
+    let flow = oauth_toolkit::loopback::LoopbackFlow::start_for_provider(
+        provider,
+        login_hint.as_deref(),
+        timeout,
+    )?;
+    let url = flow.authorization_url().to_owned();
+    let handle = tokio::task::spawn_blocking(move || {
+        flow.wait_for_code()
+            .map(|c| c.code)
+            .map_err(CryptoError::from)
     });
-
-    Ok((AuthorizationFlow { url, pkce }, handle))
+    Ok((AuthorizationFlow { url }, handle))
 }
 
-async fn capture_on(
-    listener: tokio::net::TcpListener,
-    _provider: &OAuthProvider,
-    state: &str,
-    _pkce: &Pkce,
-    timeout: std::time::Duration,
-) -> CryptoResult<(String, u16)> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let port = listener
-        .local_addr()
-        .map_err(|e| CryptoError::OAuth(format!("loopback addr: {e}")))?
-        .port();
-    let (mut socket, _) = tokio::time::timeout(timeout, listener.accept())
-        .await
-        .map_err(|_| CryptoError::OAuth("loopback capture timed out".into()))?
-        .map_err(|e| CryptoError::OAuth(format!("loopback accept: {e}")))?;
-    let mut buf = Vec::with_capacity(4096);
-    let mut chunk = [0u8; 1024];
-    loop {
-        let n = tokio::time::timeout(timeout, socket.read(&mut chunk))
-            .await
-            .map_err(|_| CryptoError::OAuth("redirect read timed out".into()))?
-            .map_err(|e| CryptoError::OAuth(format!("redirect read: {e}")))?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() > 8192 {
-            break;
-        }
-    }
-    let request = String::from_utf8_lossy(&buf).into_owned();
-    let request_line = request.lines().next().unwrap_or_default().to_owned();
-    let path = request_line
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or_default()
-        .to_owned();
-    let query = path.split_once('?').map_or("", |(_, q)| q);
-    let mut code = None;
-    let mut got_state = String::new();
-    let mut oauth_error = String::new();
-    for kv in query.split('&') {
-        let (k, v) = kv.split_once('=').unwrap_or(("", ""));
-        let decoded = percent_decode(v);
-        match k {
-            "code" => code = Some(decoded),
-            "state" => got_state = decoded,
-            "error" => oauth_error = decoded,
-            _ => {}
-        }
-    }
-    let body_ok =
-        "<html><body><h3>Signed in</h3>You may close this tab and return to Kestrel.</body></html>";
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
-        body_ok.len(),
-        body_ok
-    );
-    let _ = socket.write_all(response.as_bytes()).await;
-    let _ = socket.flush().await;
-
-    if !oauth_error.is_empty() {
-        return Err(CryptoError::OAuth(format!("provider error: {oauth_error}")));
-    }
-    if got_state != state {
-        return Err(CryptoError::OAuth("state mismatch (possible CSRF)".into()));
-    }
-    code.map(|c| (c, port))
-        .ok_or_else(|| CryptoError::OAuth("redirect missing code".into()))
-}
-
-/// Exchanges an authorization code for tokens (PKCE verifier required).
+/// Exchanges an authorization code for tokens (`code_verifier` is the PKCE
+/// verifier returned alongside the captured code).
 ///
 /// # Errors
 /// [`CryptoError::OAuth`] on HTTP/protocol failure.
 #[instrument(skip_all)]
 pub async fn exchange_code(
     http: &reqwest::Client,
-    provider: &OAuthProvider,
+    provider: &MailProvider,
     client_secret: Option<&SecretString>,
     code: &str,
     redirect_port: u16,
-    pkce: &Pkce,
+    code_verifier: &str,
 ) -> CryptoResult<TokenSet> {
-    let mut form = vec![
-        ("grant_type", "authorization_code".to_string()),
-        ("code", code.to_string()),
-        (
-            "redirect_uri",
-            format!("http://127.0.0.1:{redirect_port}/cb"),
-        ),
-        ("client_id", provider.client_id.clone()),
-        ("code_verifier", pkce.verifier.clone()),
-    ];
-    if let Some(secret) = client_secret {
-        form.push(("client_secret", secret.expose().to_owned()));
-    }
-    token_request(http, &provider.token_url, &form).await
+    let set = oauth_toolkit::token::exchange_code(
+        http,
+        &provider.token_url,
+        &provider.client_id,
+        client_secret.map(SecretString::expose),
+        code,
+        &oauth_toolkit::loopback::loopback_redirect_uri(redirect_port),
+        code_verifier,
+    )
+    .await?;
+    Ok(secret_set(set))
 }
 
 /// Refreshes an access token with a stored refresh token.
@@ -362,22 +129,23 @@ pub async fn exchange_code(
 #[instrument(skip_all)]
 pub async fn refresh(
     http: &reqwest::Client,
-    provider: &OAuthProvider,
+    provider: &MailProvider,
     client_secret: Option<&SecretString>,
     refresh_token: &SecretString,
 ) -> CryptoResult<TokenSet> {
-    let mut form = vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_token.expose().to_owned()),
-        ("client_id", provider.client_id.clone()),
-    ];
-    if let Some(secret) = client_secret {
-        form.push(("client_secret", secret.expose().to_owned()));
-    }
-    token_request(http, &provider.token_url, &form).await
+    let set = oauth_toolkit::token::refresh(
+        http,
+        &provider.token_url,
+        &provider.client_id,
+        client_secret.map(SecretString::expose),
+        refresh_token.expose(),
+    )
+    .await?;
+    Ok(secret_set(set))
 }
 
-/// Refreshes an access token using string parameters (simpler API than [`refresh`]).
+/// Refreshes an access token using string parameters (simpler API than
+/// [`refresh`]); returns the raw response for rotation handling.
 ///
 /// # Errors
 /// [`CryptoError::OAuth`] when the refresh is rejected (revoked/expired).
@@ -388,94 +156,10 @@ pub async fn refresh_access_token(
     client_id: &str,
     refresh_token: &str,
 ) -> CryptoResult<TokenResponse> {
-    let form = vec![
-        ("grant_type", "refresh_token".to_string()),
-        ("refresh_token", refresh_token.to_owned()),
-        ("client_id", client_id.to_owned()),
-    ];
-    token_request_raw(http, token_endpoint, &form).await
-}
-
-async fn token_request(
-    http: &reqwest::Client,
-    url: &str,
-    form: &[(&str, String)],
-) -> CryptoResult<TokenSet> {
-    let response = http
-        .post(url)
-        .form(form)
-        .send()
-        .await
-        .map_err(|e| CryptoError::OAuth(format!("token endpoint: {e}")))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| CryptoError::OAuth(format!("token body: {e}")))?;
-    if !status.is_success() {
-        return Err(CryptoError::OAuth(format!(
-            "token endpoint returned {status}"
-        )));
-    }
-    let parsed: TokenResponse =
-        serde_json::from_str(&text).map_err(|e| CryptoError::OAuth(format!("token JSON: {e}")))?;
-    let expires_at = now_unix_ms() + parsed.expires_in.unwrap_or(3600).cast_signed() * 1000;
-    Ok(TokenSet {
-        access_token: SecretString::new(parsed.access_token),
-        refresh_token: parsed.refresh_token.map(SecretString::new),
-        expires_at,
-    })
-}
-
-/// Posts a token request and returns the raw [`TokenResponse`].
-async fn token_request_raw(
-    http: &reqwest::Client,
-    url: &str,
-    form: &[(&str, String)],
-) -> CryptoResult<TokenResponse> {
-    let response = http
-        .post(url)
-        .form(form)
-        .send()
-        .await
-        .map_err(|e| CryptoError::OAuth(format!("token endpoint: {e}")))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|e| CryptoError::OAuth(format!("token body: {e}")))?;
-    if !status.is_success() {
-        return Err(CryptoError::OAuth(format!(
-            "token endpoint returned {status}"
-        )));
-    }
-    serde_json::from_str(&text).map_err(|e| CryptoError::OAuth(format!("token JSON: {e}")))
-}
-
-/// Wall-clock read for token-expiry math (inherently wall-clock: the token
-/// endpoint defines lifetimes; the injected clock is for engine logic).
-fn now_unix_ms() -> i64 {
-    // Audited escape of the clock ban — see fn docs.
-    #[allow(clippy::disallowed_methods)]
-    let now = std::time::SystemTime::now();
-    now.duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(0))
-}
-
-/// Parsed response from an `OAuth2` token endpoint.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct TokenResponse {
-    /// The access token string.
-    pub access_token: String,
-    /// Token type (e.g. `"Bearer"`).
-    #[serde(default)]
-    pub token_type: Option<String>,
-    /// Lifetime in seconds.
-    #[serde(default)]
-    pub expires_in: Option<u64>,
-    /// Rotated refresh token (if the provider issues one).
-    #[serde(default)]
-    pub refresh_token: Option<String>,
+    Ok(
+        oauth_toolkit::token::refresh_access_token(http, token_endpoint, client_id, refresh_token)
+            .await?,
+    )
 }
 
 /// Persists a token set's refresh token.
@@ -501,52 +185,63 @@ mod tests {
         clippy::items_after_statements
     )]
 
+    use std::sync::Arc;
+
+    use oauth_toolkit::loopback::LoopbackFlow;
+
     use super::*;
+    use crate::credentials::InMemoryStore;
+
+    const FIVE_SECS: Duration = Duration::from_secs(5);
 
     #[test]
-    fn pkce_challenge_is_s256_of_verifier() {
-        let pkce = Pkce::generate();
-        assert_eq!(pkce.challenge().len(), 43, "sha256 b64url length");
-        let digest = Sha256::digest(pkce.verifier.as_bytes());
-        assert_eq!(pkce.challenge(), URL_SAFE_NO_PAD.encode(digest));
-    }
-
-    #[test]
-    fn authorization_url_contains_required_params() {
-        let provider = OAuthProvider::gmail("cid-123");
-        let pkce = Pkce::generate();
-        let url = build_authorization_url(&provider, 53123, "st4te", &pkce, Some("a@b.c"));
+    fn authorization_urls_from_real_presets() {
+        // Gmail: umbrella scope + openid/email extras, login hint encoded.
+        let url = LoopbackFlow::start_for_provider(
+            &MailProvider::gmail("cid-123"),
+            Some("a@b.c"),
+            FIVE_SECS,
+        )
+        .unwrap()
+        .authorization_url()
+        .to_owned();
         assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
         assert!(url.contains("client_id=cid-123"));
-        assert!(url.contains("state=st4te"));
-        assert!(url.contains("code_challenge="));
         assert!(url.contains("code_challenge_method=S256"));
-        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A53123%2Fcb"));
+        assert!(url.contains("scope=https%3A%2F%2Fmail.google.com%2F"));
+        assert!(url.contains("openid"));
         assert!(url.contains("login_hint=a%40b.c"));
-        assert!(url.contains("https%3A%2F%2Fmail.google.com%2F"));
-    }
 
-    #[test]
-    fn provider_presets_shape() {
-        let g = OAuthProvider::gmail("g");
-        assert!(g.token_url.contains("googleapis"));
-        let o = OAuthProvider::outlook("o", "common");
-        assert!(o.auth_url.contains("login.microsoftonline.com/common"));
-        assert!(o.scopes.iter().any(|s| s.contains("IMAP")));
-        let y = OAuthProvider::yahoo("y");
-        assert!(y.auth_url.contains("login.yahoo.com"));
-        assert!(y.token_url.contains("login.yahoo.com"));
-        assert!(y.scopes.iter().any(|s| s.contains("mail-w")));
-        let f = OAuthProvider::fastmail("f");
-        assert!(f.token_url.contains("fastmail"));
+        // Outlook: tenant-aware endpoints; imap/smtp/extra scope split
+        // must union into the authorization request.
+        let outlook = MailProvider::outlook("o-123", "common");
+        assert!(outlook.auth_url.contains("/common/oauth2/v2.0/authorize"));
+        assert!(outlook.token_url.contains("/common/oauth2/v2.0/token"));
+        let scopes = outlook.authorization_scopes();
+        assert!(scopes.iter().any(|s| s.contains("IMAP.AccessAsUser.All")));
+        assert!(scopes.iter().any(|s| s.contains("SMTP.Send")));
+        assert!(scopes.contains(&"offline_access".to_string()));
+
+        // Yahoo + Fastmail endpoints survive the preset move.
+        let yahoo = MailProvider::yahoo("y-123");
+        assert!(yahoo.auth_url.contains("login.yahoo.com"));
+        assert!(yahoo.token_url.contains("login.yahoo.com"));
+        assert_eq!(yahoo.authorization_scopes(), vec!["mail-w"]);
+        let fastmail = MailProvider::fastmail("f-123");
+        assert!(fastmail.auth_url.contains("app.fastmail.com"));
+        assert!(fastmail.token_url.contains("api.fastmail.com"));
+        assert!(
+            fastmail
+                .authorization_scopes()
+                .iter()
+                .all(|s| s.contains("fastmail.com/dev/protocol"))
+        );
     }
 
     #[tokio::test]
     async fn loopback_capture_accepts_valid_redirect() {
-        let provider = OAuthProvider::gmail("cid");
-        let (flow, handle) = start_flow(provider, None, std::time::Duration::from_secs(5))
-            .await
-            .unwrap();
+        let provider = MailProvider::gmail("cid");
+        let (flow, handle) = start_flow(&provider, None, FIVE_SECS).await.unwrap();
         // Extract state from the URL to forge the redirect.
         let state = flow
             .url
@@ -580,16 +275,14 @@ mod tests {
         let _ = sock.read_to_string(&mut buf).await;
         assert!(buf.contains("200 OK"), "{buf}");
         assert!(buf.contains("Signed in"));
-        let (code, _pkce) = handle.await.unwrap().unwrap();
+        let code = handle.await.unwrap().unwrap();
         assert_eq!(code, "AC123");
     }
 
     #[tokio::test]
     async fn loopback_capture_rejects_state_mismatch() {
-        let provider = OAuthProvider::gmail("cid");
-        let (flow, handle) = start_flow(provider, None, std::time::Duration::from_secs(5))
-            .await
-            .unwrap();
+        let provider = MailProvider::gmail("cid");
+        let (flow, handle) = start_flow(&provider, None, FIVE_SECS).await.unwrap();
         let port: u16 = flow
             .url
             .split("redirect_uri=http%3A%2F%2F127.0.0.1%3A")
@@ -608,15 +301,11 @@ mod tests {
             "GET /cb?code=X&state=evil HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
         sock.write_all(request.as_bytes()).await.unwrap();
         drop(sock);
-        let result = handle.await.unwrap();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn percent_decode_roundtrip() {
-        assert_eq!(percent_decode("a%20b"), "a b");
-        assert_eq!(percent_decode("plain"), "plain");
-        assert_eq!(percent_decode("a%2Fb%3Ac"), "a/b:c");
+        let err = handle.await.unwrap().unwrap_err();
+        assert!(
+            err.to_string().contains("state mismatch"),
+            "CSRF surfaced: {err}"
+        );
     }
 
     /// Spawns a minimal mock token endpoint and returns its base URL.
@@ -654,35 +343,37 @@ mod tests {
         (base, handle)
     }
 
+    /// Integration-level refresh roundtrip: the toolkit-backed [`refresh`]
+    /// hands back [`SecretString`] tokens, [`persist_refresh`] stores the
+    /// rotated refresh token via `CredentialService`, and the store reads
+    /// back the new value (not the original).
     #[tokio::test]
-    async fn refresh_access_token_sends_correct_form() {
+    async fn refresh_roundtrip_via_credential_service() {
         let (base, handle) = spawn_mock_token_server().await;
         let http = reqwest::Client::new();
-        let result = refresh_access_token(
-            &http,
-            &format!("{base}/token"),
-            "test-client-id",
-            "test-refresh-token",
-        )
-        .await;
-        let resp = result.expect("success");
-        assert_eq!(resp.access_token, "new_at");
-        assert_eq!(resp.token_type.as_deref(), Some("Bearer"));
-        assert_eq!(resp.expires_in, Some(3600));
-        assert_eq!(resp.refresh_token.as_deref(), Some("new_rt"));
-        handle.await.unwrap();
-    }
+        // Gmail preset shape, token endpoint overridden with the mock
+        // (the real preset URL would hit Google's production endpoint).
+        let provider = MailProvider {
+            token_url: format!("{base}/token"),
+            ..MailProvider::gmail("test-client-id")
+        };
+        let original = SecretString::new("test-refresh-token".to_owned());
 
-    #[tokio::test]
-    async fn refresh_access_token_handles_rotation() {
-        let (base, handle) = spawn_mock_token_server().await;
-        let http = reqwest::Client::new();
-        let resp = refresh_access_token(&http, &format!("{base}/token"), "client", "old-rt")
+        let tokens = refresh(&http, &provider, None, &original)
             .await
-            .expect("ok");
-        // The mock returns a new refresh token.
-        assert_eq!(resp.refresh_token.as_deref(), Some("new_rt"));
-        assert_ne!(resp.refresh_token.as_deref(), Some("old-rt"));
+            .expect("refresh");
+        assert_eq!(tokens.access_token.expose(), "new_at");
+        assert!(tokens.expires_at > 0);
+        assert!(tokens.refresh_token.is_some());
+
+        let creds = CredentialService::new(Arc::new(InMemoryStore::new()));
+        let account = kestrel_core::ids::AccountId::from_uuid(uuid::Uuid::now_v7());
+        persist_refresh(&creds, account, &tokens).expect("persist");
+        let stored = creds.refresh_token(account).expect("read");
+        assert_eq!(
+            stored.map(|s| s.expose().to_owned()),
+            Some("new_rt".to_owned())
+        );
         handle.await.unwrap();
     }
 
@@ -693,8 +384,9 @@ mod tests {
         let err = refresh_access_token(&http, &format!("{base}/token"), "client", "bad")
             .await
             .expect_err("should fail");
+        // Toolkit TokenError mapped onto CryptoError::OAuth with the status.
         match err {
-            CryptoError::OAuth(msg) => assert!(msg.contains("400")),
+            CryptoError::OAuth(msg) => assert!(msg.contains("400"), "{msg}"),
             other => panic!("unexpected: {other}"),
         }
         handle.await.unwrap();
@@ -706,45 +398,7 @@ mod tests {
         let err = refresh_access_token(&http, "http://127.0.0.1:1/nope", "client", "rt")
             .await
             .expect_err("should fail");
-        match err {
-            CryptoError::OAuth(_) => {}
-            other => panic!("unexpected: {other}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn refresh_access_token_url_construction() {
-        // Verify the form fields are sent correctly by reading the raw POST body
-        // from a mock server that captures it.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        let base = format!("http://127.0.0.1:{port}");
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept");
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let mut buf = vec![0u8; 4096];
-            let n = stream.read(&mut buf).await.expect("read");
-            let raw = String::from_utf8_lossy(&buf[..n]).into_owned();
-            // Extract the POST body (after double CRLF).
-            let body = raw.split_once("\r\n\r\n").map_or("", |(_, b)| b);
-            assert!(body.contains("grant_type=refresh_token"), "body: {body}");
-            assert!(body.contains("refresh_token=test-rt"), "body: {body}");
-            assert!(body.contains("client_id=test-cid"), "body: {body}");
-            let resp = r#"{"access_token":"at","token_type":"Bearer","expires_in":3600,"refresh_token":"new-rt"}"#;
-            let http = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}",
-                resp.len()
-            );
-            stream.write_all(http.as_bytes()).await.expect("write");
-        });
-        let http = reqwest::Client::new();
-        let result = refresh_access_token(&http, &format!("{base}/token"), "test-cid", "test-rt")
-            .await
-            .expect("ok");
-        assert_eq!(result.access_token, "at");
-        server.await.unwrap();
+        assert!(matches!(err, CryptoError::OAuth(_)), "{err}");
     }
 
     #[test]

@@ -22,7 +22,7 @@
 use std::{sync::Arc, time::Duration};
 
 use kestrel_core::{sasl::SaslMechanism, secrets::SecretString};
-use kestrel_crypto::oauth::{self, OAuthProvider};
+use kestrel_crypto::oauth::{self, MailProvider};
 use kestrel_sync::{ConnectParams, ImapSession, Security};
 
 const IMAP_HOST: &str = "imap.gmail.com";
@@ -69,7 +69,7 @@ async fn obtain_access_token() -> (String, String) {
         .build()
         .expect("reqwest client");
 
-    let provider = OAuthProvider::gmail(&client_id);
+    let provider = MailProvider::gmail(&client_id);
     let tokens = oauth::refresh(
         &http,
         &provider,
