@@ -36,6 +36,9 @@ pub struct SyncService {
     config: Arc<Config>,
     clock: Arc<dyn Clock>,
     bus: tokio::sync::mpsc::Sender<EngineEvent>,
+    /// Per-account trigger fired by `Command::TriggerSync`: waking it ends
+    /// the current IDLE/poll wait so a fresh sync cycle starts immediately.
+    trigger: std::sync::Arc<tokio::sync::Notify>,
 }
 
 /// Selected-folder metadata from the SELECT untagged responses.
@@ -65,7 +68,15 @@ impl SyncService {
             config,
             clock,
             bus,
+            trigger: std::sync::Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Sets the per-account trigger used by `Command::TriggerSync`.
+    #[must_use]
+    pub fn with_trigger(mut self, trigger: std::sync::Arc<tokio::sync::Notify>) -> Self {
+        self.trigger = trigger;
+        self
     }
 
     /// Runs the state machine until cancellation.
@@ -144,9 +155,16 @@ impl SyncService {
                     session.logout().await;
                     return Ok(());
                 }
-                let woke = session
-                    .idle(Duration::from_secs(60 * self.config.sync.idle_timeout_mins))
-                    .await?;
+                let idle_for = Duration::from_secs(60 * self.config.sync.idle_timeout_mins);
+                let woke = tokio::select! {
+                    res = session.idle(idle_for) => res?,
+                    // `TriggerSync`: leave IDLE so the run loop starts a
+                    // fresh connect → sync cycle immediately.
+                    () = self.trigger.notified() => {
+                        session.logout().await;
+                        return Ok(());
+                    }
+                };
                 if cancel.is_cancelled() {
                     session.logout().await;
                     return Ok(());
@@ -176,6 +194,9 @@ impl SyncService {
                         return Ok(());
                     }
                     () = tokio::time::sleep(jitter) => {}
+                    // `TriggerSync`: end the poll wait; the sync pass below
+                    // runs immediately.
+                    () = self.trigger.notified() => {}
                 }
                 self.emit_state(ConnectionState::Syncing).await;
                 let folders = self.list_stored_folders().await;

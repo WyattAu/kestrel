@@ -16,15 +16,18 @@ use kestrel_core::{
     config::Config,
     error::KestrelError,
     ids::{AccountId, IdGenerator},
-    protocol::{CommandPayload, EngineEvent, Reply, ServiceId, ShutdownStage, Window},
+    protocol::{CommandPayload, EngineEvent, Reply, ShutdownStage, Window},
 };
 use kestrel_storage::{
     FlagPayload, OpType, OutboxEnvelope, PendingOpPayload, SearchHandle, StorageHandle,
 };
 use tokio::sync::mpsc;
-use tracing::{Instrument, instrument};
+use tracing::instrument;
 
-use crate::{bus::EventBus, supervisor::spawn_supervised};
+use crate::{
+    accounts::{self, AccountRegistry, AccountServicesSpec},
+    bus::EventBus,
+};
 
 /// The engine's frontend-facing router.
 pub struct EngineRouter {
@@ -35,12 +38,12 @@ pub struct EngineRouter {
     ids: Arc<dyn IdGenerator>,
     clock: Arc<dyn Clock>,
     creds: std::sync::Arc<kestrel_crypto::CredentialService>,
-    /// Per-account `SyncService` cancellation tokens (started on `AddAccount`).
-    sync_tasks: Arc<
-        tokio::sync::Mutex<
-            std::collections::HashMap<AccountId, tokio_util::sync::CancellationToken>,
-        >,
-    >,
+    /// Shared per-account service registry (in-session adds and startup
+    /// resumes alike; accounts.rs).
+    registry: Arc<AccountRegistry>,
+    /// Engine-wide cancellation; per-account tokens are its children, so the
+    /// shutdown epilogue stops every account's services.
+    engine_cancel: tokio_util::sync::CancellationToken,
     /// Offline mode flag (sync-engine.md §6).
     offline: Arc<AtomicBool>,
     /// Whether the shutdown epilogue waits (≤ 5 s) for the outbox final
@@ -51,6 +54,8 @@ pub struct EngineRouter {
 impl EngineRouter {
     /// Assembles the router over live services.
     #[must_use]
+    #[allow(private_interfaces)] // the account registry is an in-crate handle
+    #[allow(clippy::too_many_arguments)] // one per live service the router wires
     pub fn new(
         config: Arc<Config>,
         storage: StorageHandle,
@@ -59,6 +64,8 @@ impl EngineRouter {
         ids: Arc<dyn IdGenerator>,
         clock: Arc<dyn Clock>,
         creds: std::sync::Arc<kestrel_crypto::CredentialService>,
+        registry: Arc<AccountRegistry>,
+        engine_cancel: tokio_util::sync::CancellationToken,
     ) -> Self {
         Self {
             config: Arc::new(tokio::sync::RwLock::new(config)),
@@ -68,7 +75,8 @@ impl EngineRouter {
             ids,
             clock,
             creds,
-            sync_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            registry,
+            engine_cancel,
             offline: Arc::new(AtomicBool::new(false)),
             drain_outbox: Arc::new(AtomicBool::new(true)),
         }
@@ -115,13 +123,14 @@ impl EngineRouter {
         // snooze, filter, startup outbox/JMAP sync). Outbox instances run
         // their final flush in the cancellation branch of `run`.
         engine_cancel.cancel();
-        // Cancel in-session per-account sync/outbox services too.
-        let account_tokens: Vec<_> = {
-            let map = self.sync_tasks.lock().await;
+        // Cancel per-account sync/outbox services too (they are engine-cancel
+        // children, but cancel explicitly so the drain order is deterministic).
+        let account_handles: Vec<_> = {
+            let map = self.registry.lock().await;
             map.values().cloned().collect()
         };
-        for token in account_tokens {
-            token.cancel();
+        for handle in account_handles {
+            handle.cancel.cancel();
         }
         self.bus.publish(EngineEvent::EngineShutdownProgress {
             stage: ShutdownStage::CancelServices,
@@ -473,10 +482,9 @@ impl EngineRouter {
                 Self::answer(Some(reply), result.map(Reply::OAuthUrl));
             }
             P::RemoveAccount { account, reply } => {
-                // Cancel the sync service.
-                if let Some(token) = self.sync_tasks.lock().await.remove(&account) {
-                    token.cancel();
-                }
+                // Cancel the account's supervised services (IMAP/JMAP sync
+                // and outbox share one token).
+                accounts::stop_account(&self.registry, account).await;
                 let result = self
                     .storage
                     .delete_account(account)
@@ -494,9 +502,18 @@ impl EngineRouter {
             }
 
             // ---- sync control ----
-            // Phase 2 attaches sync-mode handling (fire-and-forget per
-            // the protocol; no reply by construction).
-            P::TriggerSync { .. } => {}
+            // Fire-and-forget by construction (message-protocol §6.3): wake
+            // the account's sync service so it ends its current IDLE/poll
+            // wait and starts a cycle now. Unknown accounts are ignored.
+            P::TriggerSync { account, kind } => {
+                let registry = self.registry.lock().await;
+                if let Some(handle) = registry.get(&account) {
+                    tracing::info!(account = %account, ?kind, "TriggerSync: waking sync service");
+                    handle.trigger.notify_one();
+                } else {
+                    tracing::debug!(account = %account, "TriggerSync for unknown account ignored");
+                }
+            }
             P::GoOffline => {
                 self.offline.store(true, Ordering::Relaxed);
                 tracing::info!("entering offline mode");
@@ -577,159 +594,10 @@ impl EngineRouter {
             .set_password(account_id, &password)
             .map_err(KestrelError::from)?;
 
-        // 3. Start the per-account sync service.
-        let cancel = tokio_util::sync::CancellationToken::new();
-        self.sync_tasks
-            .lock()
-            .await
-            .insert(account_id, cancel.clone());
-
-        let store: std::sync::Arc<dyn kestrel_core::store_model::MailStore> =
-            std::sync::Arc::new(self.storage.clone());
-
-        let token = self
-            .creds
-            .password(account_id)
-            .map_err(KestrelError::from)?
-            .unwrap_or_else(|| kestrel_core::secrets::SecretString::new(String::new()));
-
-        if config.provider == kestrel_core::protocol::Provider::Jmap {
-            let jmap_host = config.imap_host.clone();
-            let service = std::sync::Arc::new(kestrel_sync::JmapSyncService::new(
-                account_id,
-                jmap_host,
-                token,
-                store,
-                Arc::clone(&self.clock),
-                self.bus_forwarder(),
-            ));
-            spawn_supervised(
-                ServiceId::Sync(account_id),
-                self.bus.clone(),
-                cancel.clone(),
-                move |attempt| {
-                    let service = Arc::clone(&service);
-                    async move {
-                        service.run(attempt).await;
-                        Ok(())
-                    }
-                },
-            );
-        } else {
-            let security = Self::parse_security(&config.imap_security);
-            let connect = kestrel_sync::ConnectParams {
-                host: config.imap_host.clone(),
-                port: config.imap_port,
-                security,
-                username: config
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| config.email.clone()),
-                secret: token,
-                mechanisms: match &config.provider {
-                    kestrel_core::protocol::Provider::Gmail
-                    | kestrel_core::protocol::Provider::Yahoo
-                    | kestrel_core::protocol::Provider::Aol => {
-                        vec![
-                            kestrel_core::sasl::SaslMechanism::Xoauth2,
-                            kestrel_core::sasl::SaslMechanism::Plain,
-                        ]
-                    }
-                    kestrel_core::protocol::Provider::Outlook
-                    | kestrel_core::protocol::Provider::Fastmail => {
-                        vec![kestrel_core::sasl::SaslMechanism::Plain]
-                    }
-                    _ => vec![
-                        kestrel_core::sasl::SaslMechanism::Plain,
-                        kestrel_core::sasl::SaslMechanism::Login,
-                        kestrel_core::sasl::SaslMechanism::ScramSha256,
-                    ],
-                },
-                tls: tokio_rustls::TlsConnector::from(
-                    kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
-                ),
-                sasl_factory: std::sync::Arc::new(|mech, user, secret| {
-                    kestrel_crypto::sasl::start(mech, user, secret)
-                }),
-            };
-            let service = std::sync::Arc::new(kestrel_sync::SyncService::new(
-                account_id,
-                connect,
-                store.clone(),
-                Arc::clone(&*self.config.read().await),
-                Arc::clone(&self.clock),
-                self.bus_forwarder(),
-            ));
-            spawn_supervised(
-                ServiceId::Sync(account_id),
-                self.bus.clone(),
-                cancel.clone(),
-                move |attempt| {
-                    let service = Arc::clone(&service);
-                    async move {
-                        service.run(attempt).await;
-                        Ok(())
-                    }
-                },
-            );
-
-            // Spawn the outbox flush service for this account.
-            let smtp_params = kestrel_sync::SmtpParams {
-                host: config.smtp_host.clone(),
-                port: config.smtp_port,
-                username: config
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| config.email.clone()),
-                secret: password.clone(),
-                oauth2: config.auth_kind == "oauth2",
-                security: match config.smtp_security.as_str() {
-                    "starttls" => kestrel_sync::SmtpSecurity::StartTls,
-                    _ => kestrel_sync::SmtpSecurity::ImplicitTls,
-                },
-            };
-            let imap_connect = kestrel_sync::ConnectParams {
-                host: config.imap_host.clone(),
-                port: config.imap_port,
-                security,
-                username: config
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| config.email.clone()),
-                secret: password,
-                mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
-                tls: tokio_rustls::TlsConnector::from(
-                    kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
-                ),
-                sasl_factory: std::sync::Arc::new(|mech, user, secret| {
-                    kestrel_crypto::sasl::start(mech, user, secret)
-                }),
-            };
-            let online = std::sync::Arc::new(AtomicBool::new(true));
-            let outbox = kestrel_sync::OutboxService::new(
-                store,
-                smtp_params,
-                imap_connect,
-                Arc::clone(&self.clock),
-                self.bus_forwarder(),
-                online,
-            );
-            let outbox = std::sync::Arc::new(outbox);
-            spawn_supervised(
-                ServiceId::Outbox,
-                self.bus.clone(),
-                cancel,
-                move |attempt| {
-                    let service = Arc::clone(&outbox);
-                    let span = tracing::info_span!("outbox", account = %account_id);
-                    async move {
-                        service.run(attempt).await;
-                        Ok(())
-                    }
-                    .instrument(span)
-                },
-            );
-        }
+        // 3. Start the per-account services under the supervisor (shared
+        // lifecycle with UpdateAccount and startup resume; accounts.rs).
+        self.start_account_services(config, account_id, password)
+            .await?;
 
         // Return the updated account list.
         self.storage.list_accounts().await
@@ -756,11 +624,10 @@ impl EngineRouter {
         let accounts = self.storage.list_accounts().await.unwrap_or_default();
         let existing = accounts.iter().find(|a| a.email == config.email);
 
-        // If an existing account is found, cancel its sync service.
-        if let Some(acct) = existing
-            && let Some(token) = self.sync_tasks.lock().await.remove(&acct.id)
-        {
-            token.cancel();
+        // If an existing account is found, stop its supervised services so
+        // the restart below cannot overlap the old ones.
+        if let Some(acct) = existing {
+            accounts::stop_account(&self.registry, acct.id).await;
         }
 
         // Upsert the account row (same as add_account).
@@ -785,159 +652,10 @@ impl EngineRouter {
             .set_password(account_id, &password)
             .map_err(KestrelError::from)?;
 
-        // Start the per-account sync service.
-        let cancel = tokio_util::sync::CancellationToken::new();
-        self.sync_tasks
-            .lock()
-            .await
-            .insert(account_id, cancel.clone());
-
-        let store: std::sync::Arc<dyn kestrel_core::store_model::MailStore> =
-            std::sync::Arc::new(self.storage.clone());
-
-        let token = self
-            .creds
-            .password(account_id)
-            .map_err(KestrelError::from)?
-            .unwrap_or_else(|| kestrel_core::secrets::SecretString::new(String::new()));
-
-        if config.provider == kestrel_core::protocol::Provider::Jmap {
-            let jmap_host = config.imap_host.clone();
-            let service = std::sync::Arc::new(kestrel_sync::JmapSyncService::new(
-                account_id,
-                jmap_host,
-                token,
-                store,
-                Arc::clone(&self.clock),
-                self.bus_forwarder(),
-            ));
-            spawn_supervised(
-                ServiceId::Sync(account_id),
-                self.bus.clone(),
-                cancel.clone(),
-                move |attempt| {
-                    let service = Arc::clone(&service);
-                    async move {
-                        service.run(attempt).await;
-                        Ok(())
-                    }
-                },
-            );
-        } else {
-            let security = Self::parse_security(&config.imap_security);
-            let connect = kestrel_sync::ConnectParams {
-                host: config.imap_host.clone(),
-                port: config.imap_port,
-                security,
-                username: config
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| config.email.clone()),
-                secret: token,
-                mechanisms: match &config.provider {
-                    kestrel_core::protocol::Provider::Gmail
-                    | kestrel_core::protocol::Provider::Yahoo
-                    | kestrel_core::protocol::Provider::Aol => {
-                        vec![
-                            kestrel_core::sasl::SaslMechanism::Xoauth2,
-                            kestrel_core::sasl::SaslMechanism::Plain,
-                        ]
-                    }
-                    kestrel_core::protocol::Provider::Outlook
-                    | kestrel_core::protocol::Provider::Fastmail => {
-                        vec![kestrel_core::sasl::SaslMechanism::Plain]
-                    }
-                    _ => vec![
-                        kestrel_core::sasl::SaslMechanism::Plain,
-                        kestrel_core::sasl::SaslMechanism::Login,
-                        kestrel_core::sasl::SaslMechanism::ScramSha256,
-                    ],
-                },
-                tls: tokio_rustls::TlsConnector::from(
-                    kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
-                ),
-                sasl_factory: std::sync::Arc::new(|mech, user, secret| {
-                    kestrel_crypto::sasl::start(mech, user, secret)
-                }),
-            };
-            let service = std::sync::Arc::new(kestrel_sync::SyncService::new(
-                account_id,
-                connect,
-                store.clone(),
-                Arc::clone(&*self.config.read().await),
-                Arc::clone(&self.clock),
-                self.bus_forwarder(),
-            ));
-            spawn_supervised(
-                ServiceId::Sync(account_id),
-                self.bus.clone(),
-                cancel.clone(),
-                move |attempt| {
-                    let service = Arc::clone(&service);
-                    async move {
-                        service.run(attempt).await;
-                        Ok(())
-                    }
-                },
-            );
-
-            // Spawn the outbox flush service for this account.
-            let smtp_params = kestrel_sync::SmtpParams {
-                host: config.smtp_host.clone(),
-                port: config.smtp_port,
-                username: config
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| config.email.clone()),
-                secret: password.clone(),
-                oauth2: config.auth_kind == "oauth2",
-                security: match config.smtp_security.as_str() {
-                    "starttls" => kestrel_sync::SmtpSecurity::StartTls,
-                    _ => kestrel_sync::SmtpSecurity::ImplicitTls,
-                },
-            };
-            let imap_connect = kestrel_sync::ConnectParams {
-                host: config.imap_host.clone(),
-                port: config.imap_port,
-                security,
-                username: config
-                    .username
-                    .clone()
-                    .unwrap_or_else(|| config.email.clone()),
-                secret: password,
-                mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
-                tls: tokio_rustls::TlsConnector::from(
-                    kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
-                ),
-                sasl_factory: std::sync::Arc::new(|mech, user, secret| {
-                    kestrel_crypto::sasl::start(mech, user, secret)
-                }),
-            };
-            let online = std::sync::Arc::new(AtomicBool::new(true));
-            let outbox = kestrel_sync::OutboxService::new(
-                store,
-                smtp_params,
-                imap_connect,
-                Arc::clone(&self.clock),
-                self.bus_forwarder(),
-                online,
-            );
-            let outbox = std::sync::Arc::new(outbox);
-            spawn_supervised(
-                ServiceId::Outbox,
-                self.bus.clone(),
-                cancel,
-                move |attempt| {
-                    let service = Arc::clone(&outbox);
-                    let span = tracing::info_span!("outbox", account = %account_id);
-                    async move {
-                        service.run(attempt).await;
-                        Ok(())
-                    }
-                    .instrument(span)
-                },
-            );
-        }
+        // Start the per-account services under the supervisor (shared
+        // lifecycle with AddAccount and startup resume; accounts.rs).
+        self.start_account_services(config, account_id, password)
+            .await?;
 
         // Return the updated account list.
         self.storage.list_accounts().await
@@ -985,6 +703,105 @@ impl EngineRouter {
         }
     }
 
+    /// Builds and starts one account's supervised services from a validated
+    /// `AccountConfig` (shared by `AddAccount` / `UpdateAccount`; backlog
+    /// #2). The account row and keyring entry must already exist.
+    #[instrument(skip_all, fields(account = %account_id))]
+    async fn start_account_services(
+        &self,
+        config: kestrel_core::provider::AccountConfig,
+        account_id: AccountId,
+        password: kestrel_core::secrets::SecretString,
+    ) -> Result<(), KestrelError> {
+        let store: std::sync::Arc<dyn kestrel_core::store_model::MailStore> =
+            std::sync::Arc::new(self.storage.clone());
+        let tls = tokio_rustls::TlsConnector::from(
+            kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
+        );
+        let sasl_factory: kestrel_sync::SaslFactory = std::sync::Arc::new(|mech, user, secret| {
+            kestrel_crypto::sasl::start(mech, user, secret)
+        });
+
+        let (jmap, imap, outbox) = if config.provider == kestrel_core::protocol::Provider::Jmap {
+            // JMAP sync only (JMAP SMTP submit is not wired yet).
+            (Some((config.imap_host.clone(), password)), None, None)
+        } else {
+            let security = Self::parse_security(&config.imap_security);
+            let mechanisms = match &config.provider {
+                kestrel_core::protocol::Provider::Gmail
+                | kestrel_core::protocol::Provider::Yahoo
+                | kestrel_core::protocol::Provider::Aol => vec![
+                    kestrel_core::sasl::SaslMechanism::Xoauth2,
+                    kestrel_core::sasl::SaslMechanism::Plain,
+                ],
+                kestrel_core::protocol::Provider::Outlook
+                | kestrel_core::protocol::Provider::Fastmail => {
+                    vec![kestrel_core::sasl::SaslMechanism::Plain]
+                }
+                _ => vec![
+                    kestrel_core::sasl::SaslMechanism::Plain,
+                    kestrel_core::sasl::SaslMechanism::Login,
+                    kestrel_core::sasl::SaslMechanism::ScramSha256,
+                ],
+            };
+            let username = config
+                .username
+                .clone()
+                .unwrap_or_else(|| config.email.clone());
+            let imap = kestrel_sync::ConnectParams {
+                host: config.imap_host.clone(),
+                port: config.imap_port,
+                security,
+                username: username.clone(),
+                secret: password.clone(),
+                mechanisms,
+                tls: tls.clone(),
+                sasl_factory: sasl_factory.clone(),
+            };
+            let smtp = kestrel_sync::SmtpParams {
+                host: config.smtp_host.clone(),
+                port: config.smtp_port,
+                username: username.clone(),
+                secret: password.clone(),
+                oauth2: config.auth_kind == "oauth2",
+                security: match config.smtp_security.as_str() {
+                    "starttls" => kestrel_sync::SmtpSecurity::StartTls,
+                    _ => kestrel_sync::SmtpSecurity::ImplicitTls,
+                },
+            };
+            // Outbox health checks reuse the IMAP connection params.
+            let outbox_imap = kestrel_sync::ConnectParams {
+                host: config.imap_host.clone(),
+                port: config.imap_port,
+                security,
+                username,
+                secret: password,
+                mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
+                tls,
+                sasl_factory,
+            };
+            (None, Some(imap), Some((smtp, outbox_imap)))
+        };
+
+        let spec = AccountServicesSpec {
+            account: account_id,
+            jmap,
+            imap,
+            outbox,
+            store,
+            clock: Arc::clone(&self.clock),
+            cfg: Arc::clone(&*self.config.read().await),
+        };
+        accounts::start_account_services(
+            &self.registry,
+            self.bus.clone(),
+            self.engine_cancel.clone(),
+            spec,
+        )
+        .await;
+        Ok(())
+    }
+
     /// Builds the `OAuth2` authorization URL for a provider.
     /// The frontend opens this URL in the browser; the engine will listen
     /// on a loopback server for the callback.
@@ -1026,18 +843,6 @@ impl EngineRouter {
             detail: e.to_string(),
         })?;
         Ok(flow.url)
-    }
-
-    /// Returns a channel sender that publishes events on the bus.
-    fn bus_forwarder(&self) -> tokio::sync::mpsc::Sender<kestrel_core::protocol::EngineEvent> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-        let bus = self.bus.clone();
-        tokio::spawn(async move {
-            while let Some(ev) = rx.recv().await {
-                bus.publish(ev);
-            }
-        });
-        tx
     }
 
     #[instrument(skip_all, fields(account = %draft.account))]

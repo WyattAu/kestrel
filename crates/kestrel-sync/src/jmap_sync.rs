@@ -29,6 +29,9 @@ pub struct JmapSyncService {
     storage: Arc<dyn MailStore>,
     clock: Arc<dyn Clock>,
     bus: tokio::sync::mpsc::Sender<EngineEvent>,
+    /// Per-account trigger fired by `Command::TriggerSync`: waking it ends
+    /// the poll wait so a fresh sync cycle starts immediately.
+    trigger: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl JmapSyncService {
@@ -49,7 +52,15 @@ impl JmapSyncService {
             storage,
             clock,
             bus,
+            trigger: std::sync::Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Sets the per-account trigger used by `Command::TriggerSync`.
+    #[must_use]
+    pub fn with_trigger(mut self, trigger: std::sync::Arc<tokio::sync::Notify>) -> Self {
+        self.trigger = trigger;
+        self
     }
 
     /// Spawns the service as a tokio task, returning its join handle.
@@ -137,6 +148,9 @@ impl JmapSyncService {
             tokio::select! {
                 () = cancel.cancelled() => return Ok(()),
                 () = tokio::time::sleep(jitter) => {}
+                // `TriggerSync`: end the poll wait; the delta pass below
+                // runs immediately.
+                () = self.trigger.notified() => {}
             }
             self.emit_state(ConnectionState::Syncing).await;
             let folders = self.list_stored_folders().await;

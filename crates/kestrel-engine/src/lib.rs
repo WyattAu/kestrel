@@ -28,11 +28,11 @@ use kestrel_core::{
     },
 };
 use kestrel_storage::{IndexService, SearchService, StorageHandle, StorageService};
-use kestrel_sync::{OutboxService, SmtpParams, SmtpSecurity, SyncService};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+pub mod accounts;
 pub mod bus;
 pub mod filter;
 pub mod router;
@@ -287,6 +287,10 @@ impl Engine {
         // Router.
         let creds = std::sync::Arc::new(kestrel_crypto::CredentialService::new(store));
         let startup_config = Arc::clone(&config);
+        // Shared per-account service registry: the startup resume loop below
+        // and the router's add/update/remove/TriggerSync all use it, so every
+        // account behaves the same however it came to life.
+        let registry = accounts::new_registry();
         let router = EngineRouter::new(
             config,
             storage.clone(),
@@ -295,223 +299,27 @@ impl Engine {
             Arc::clone(&ids),
             Arc::clone(&clock),
             std::sync::Arc::clone(&creds),
+            Arc::clone(&registry),
+            engine_cancel.clone(),
         );
 
-        // Spawn JMAP sync + outbox services for existing accounts.
+        // Resume per-account services for stored accounts (JMAP sync, IMAP
+        // sync, preset-provider outbox) through the same supervised
+        // lifecycle the router uses for in-session adds (accounts.rs; #2).
         if let Ok(accounts) = storage.list_accounts().await {
             for acct in &accounts {
-                if acct.protocol == MailProtocol::Jmap {
-                    let token = creds
-                        .password(acct.id)
-                        .unwrap_or_default()
-                        .unwrap_or_else(|| kestrel_core::secrets::SecretString::new(String::new()));
-                    let host = acct.host.clone();
-                    let store: std::sync::Arc<dyn kestrel_core::store_model::MailStore> =
-                        std::sync::Arc::new(storage.clone());
-                    let (ev_tx, mut ev_rx) = mpsc::channel(64);
-                    let bus_clone = bus.clone();
-                    tokio::spawn(async move {
-                        while let Some(ev) = ev_rx.recv().await {
-                            bus_clone.publish(ev);
-                        }
-                    });
-                    let stop = engine_cancel.child_token();
-                    let service = std::sync::Arc::new(kestrel_sync::JmapSyncService::new(
-                        acct.id,
-                        host,
-                        token,
-                        store,
-                        Arc::clone(&clock),
-                        ev_tx,
-                    ));
-                    spawn_supervised(
-                        ServiceId::Sync(acct.id),
-                        bus.clone(),
-                        stop,
-                        move |attempt| {
-                            let service = Arc::clone(&service);
-                            async move {
-                                service.run(attempt).await;
-                                Ok(())
-                            }
-                        },
-                    );
-                } else {
-                    // Resume the per-account IMAP sync state machine for
-                    // accounts already stored at startup (roadmap “Known
-                    // gaps”): same supervised SyncService the router starts
-                    // for in-session adds.
-                    let preset =
-                        kestrel_core::provider::provider_preset(&acct.provider, &acct.email);
-                    let host = if preset.imap_host.is_empty() {
-                        acct.host.clone()
-                    } else {
-                        preset.imap_host.clone()
-                    };
-                    if !host.is_empty() {
-                        let token =
-                            creds
-                                .password(acct.id)
-                                .unwrap_or_default()
-                                .unwrap_or_else(|| {
-                                    kestrel_core::secrets::SecretString::new(String::new())
-                                });
-                        let security = match preset.imap_security.as_str() {
-                            "starttls" => kestrel_sync::Security::StartTls,
-                            _ => kestrel_sync::Security::Tls,
-                        };
-                        let mechanisms = match &acct.provider {
-                            kestrel_core::protocol::Provider::Gmail
-                            | kestrel_core::protocol::Provider::Yahoo
-                            | kestrel_core::protocol::Provider::Aol => vec![
-                                kestrel_core::sasl::SaslMechanism::Xoauth2,
-                                kestrel_core::sasl::SaslMechanism::Plain,
-                            ],
-                            kestrel_core::protocol::Provider::Outlook
-                            | kestrel_core::protocol::Provider::Fastmail => {
-                                vec![kestrel_core::sasl::SaslMechanism::Plain]
-                            }
-                            _ => vec![
-                                kestrel_core::sasl::SaslMechanism::Plain,
-                                kestrel_core::sasl::SaslMechanism::Login,
-                                kestrel_core::sasl::SaslMechanism::ScramSha256,
-                            ],
-                        };
-                        let connect = kestrel_sync::ConnectParams {
-                            host,
-                            port: preset.imap_port,
-                            security,
-                            username: preset
-                                .username
-                                .clone()
-                                .unwrap_or_else(|| preset.email.clone()),
-                            secret: token,
-                            mechanisms,
-                            tls: tokio_rustls::TlsConnector::from(
-                                kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
-                            ),
-                            sasl_factory: std::sync::Arc::new(|mech, user, secret| {
-                                kestrel_crypto::sasl::start(mech, user, secret)
-                            }),
-                        };
-                        let store: Arc<dyn kestrel_core::store_model::MailStore> =
-                            std::sync::Arc::new(storage.clone());
-                        let (ev_tx, mut ev_rx) = mpsc::channel(64);
-                        let bus_clone = bus.clone();
-                        tokio::spawn(async move {
-                            while let Some(ev) = ev_rx.recv().await {
-                                bus_clone.publish(ev);
-                            }
-                        });
-                        let account = acct.id;
-                        let stop = engine_cancel.child_token();
-                        let service = std::sync::Arc::new(SyncService::new(
-                            account,
-                            connect,
-                            store,
-                            Arc::clone(&startup_config),
-                            Arc::clone(&clock),
-                            ev_tx,
-                        ));
-                        spawn_supervised(
-                            ServiceId::Sync(account),
-                            bus.clone(),
-                            stop,
-                            move |attempt| {
-                                let service = Arc::clone(&service);
-                                let span = tracing::info_span!("sync", account = %account);
-                                async move {
-                                    service.run(attempt).await;
-                                    Ok(())
-                                }
-                                .instrument(span)
-                            },
-                        );
-                    }
-                }
-
-                // Spawn outbox service for accounts with known provider presets.
-                if !matches!(
-                    acct.provider,
-                    kestrel_core::protocol::Provider::Generic
-                        | kestrel_core::protocol::Provider::Jmap
-                ) {
-                    let preset =
-                        kestrel_core::provider::provider_preset(&acct.provider, &acct.email);
-                    let secret = creds
-                        .password(acct.id)
-                        .unwrap_or_default()
-                        .unwrap_or_else(|| kestrel_core::secrets::SecretString::new(String::new()));
-                    let smtp_params = SmtpParams {
-                        host: preset.smtp_host.clone(),
-                        port: preset.smtp_port,
-                        username: preset
-                            .username
-                            .clone()
-                            .unwrap_or_else(|| preset.email.clone()),
-                        secret: secret.clone(),
-                        oauth2: preset.auth_kind == "oauth2",
-                        security: match preset.smtp_security.as_str() {
-                            "starttls" => SmtpSecurity::StartTls,
-                            _ => SmtpSecurity::ImplicitTls,
-                        },
-                    };
-                    let imap_security = match preset.imap_security.as_str() {
-                        "starttls" => kestrel_sync::Security::StartTls,
-                        _ => kestrel_sync::Security::Tls,
-                    };
-                    let imap_connect = kestrel_sync::ConnectParams {
-                        host: preset.imap_host.clone(),
-                        port: preset.imap_port,
-                        security: imap_security,
-                        username: preset
-                            .username
-                            .clone()
-                            .unwrap_or_else(|| preset.email.clone()),
-                        secret,
-                        mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
-                        tls: tokio_rustls::TlsConnector::from(
-                            kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
-                        ),
-                        sasl_factory: std::sync::Arc::new(|mech, user, secret| {
-                            kestrel_crypto::sasl::start(mech, user, secret)
-                        }),
-                    };
-                    let online = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-                    let (outbox_ev_tx, mut outbox_ev_rx) = mpsc::channel(64);
-                    let outbox_bus_clone = bus.clone();
-                    tokio::spawn(async move {
-                        while let Some(ev) = outbox_ev_rx.recv().await {
-                            outbox_bus_clone.publish(ev);
-                        }
-                    });
-                    let outbox_store: Arc<dyn kestrel_core::store_model::MailStore> =
-                        std::sync::Arc::new(storage.clone());
-                    let account = acct.id;
-                    let outbox_stop = engine_cancel.child_token();
-                    let outbox = std::sync::Arc::new(OutboxService::new(
-                        outbox_store,
-                        smtp_params,
-                        imap_connect,
-                        Arc::clone(&clock),
-                        outbox_ev_tx,
-                        online,
-                    ));
-                    spawn_supervised(
-                        ServiceId::Outbox,
-                        bus.clone(),
-                        outbox_stop,
-                        move |attempt| {
-                            let service = Arc::clone(&outbox);
-                            let span = tracing::info_span!("outbox", account = %account);
-                            async move {
-                                service.run(attempt).await;
-                                Ok(())
-                            }
-                            .instrument(span)
-                        },
-                    );
-                }
+                let Some(spec) =
+                    startup_spec_for(acct, &creds, &storage, &clock, Arc::clone(&startup_config))
+                else {
+                    continue;
+                };
+                accounts::start_account_services(
+                    &registry,
+                    bus.clone(),
+                    engine_cancel.clone(),
+                    spec,
+                )
+                .await;
             }
         }
         let router_cancel = engine_cancel.child_token();
@@ -532,6 +340,133 @@ impl Engine {
             done: std::sync::Arc::new(tokio::sync::Mutex::new(Some(done_rx))),
         })
     }
+}
+
+/// Resolves the services to resume for one stored account (startup path).
+///
+/// Stored account rows keep only provider/email/host, so the provider
+/// preset fills in the connection details (the in-session router path uses
+/// the full `AccountConfig` instead). Returns `None` when the account has
+/// neither an IMAP host to sync nor a preset SMTP route to flush.
+#[allow(clippy::too_many_lines)]
+fn startup_spec_for(
+    acct: &kestrel_core::protocol::AccountSummary,
+    creds: &kestrel_crypto::CredentialService,
+    storage: &StorageHandle,
+    clock: &Arc<dyn Clock>,
+    cfg: Arc<Config>,
+) -> Option<accounts::AccountServicesSpec> {
+    let secret = creds
+        .password(acct.id)
+        .unwrap_or_default()
+        .unwrap_or_else(|| kestrel_core::secrets::SecretString::new(String::new()));
+    let store: Arc<dyn kestrel_core::store_model::MailStore> = Arc::new(storage.clone());
+    let tls = tokio_rustls::TlsConnector::from(kestrel_crypto::tls_config(None).ok()?);
+    let sasl_factory: kestrel_sync::SaslFactory =
+        std::sync::Arc::new(|mech, user, secret| kestrel_crypto::sasl::start(mech, user, secret));
+
+    let is_jmap = acct.protocol == MailProtocol::Jmap;
+    let preset = kestrel_core::provider::provider_preset(&acct.provider, &acct.email);
+    let host = if preset.imap_host.is_empty() {
+        acct.host.clone()
+    } else {
+        preset.imap_host.clone()
+    };
+    let has_outbox = !matches!(
+        acct.provider,
+        kestrel_core::protocol::Provider::Generic | kestrel_core::protocol::Provider::Jmap
+    );
+    // Nothing to resume: not JMAP, no IMAP host to sync, and no preset
+    // SMTP route to flush.
+    if !is_jmap && host.is_empty() && !has_outbox {
+        return None;
+    }
+
+    let imap_security = match preset.imap_security.as_str() {
+        "starttls" => kestrel_sync::Security::StartTls,
+        _ => kestrel_sync::Security::Tls,
+    };
+    let imap = if is_jmap || host.is_empty() {
+        None
+    } else {
+        let mechanisms = match &acct.provider {
+            kestrel_core::protocol::Provider::Gmail
+            | kestrel_core::protocol::Provider::Yahoo
+            | kestrel_core::protocol::Provider::Aol => vec![
+                kestrel_core::sasl::SaslMechanism::Xoauth2,
+                kestrel_core::sasl::SaslMechanism::Plain,
+            ],
+            kestrel_core::protocol::Provider::Outlook
+            | kestrel_core::protocol::Provider::Fastmail => {
+                vec![kestrel_core::sasl::SaslMechanism::Plain]
+            }
+            _ => vec![
+                kestrel_core::sasl::SaslMechanism::Plain,
+                kestrel_core::sasl::SaslMechanism::Login,
+                kestrel_core::sasl::SaslMechanism::ScramSha256,
+            ],
+        };
+        Some(kestrel_sync::ConnectParams {
+            host: host.clone(),
+            port: preset.imap_port,
+            security: imap_security,
+            username: preset
+                .username
+                .clone()
+                .unwrap_or_else(|| preset.email.clone()),
+            secret: secret.clone(),
+            mechanisms,
+            tls: tls.clone(),
+            sasl_factory: sasl_factory.clone(),
+        })
+    };
+
+    let outbox = if has_outbox {
+        let smtp = kestrel_sync::SmtpParams {
+            host: preset.smtp_host.clone(),
+            port: preset.smtp_port,
+            username: preset
+                .username
+                .clone()
+                .unwrap_or_else(|| preset.email.clone()),
+            secret: secret.clone(),
+            oauth2: preset.auth_kind == "oauth2",
+            security: match preset.smtp_security.as_str() {
+                "starttls" => kestrel_sync::SmtpSecurity::StartTls,
+                _ => kestrel_sync::SmtpSecurity::ImplicitTls,
+            },
+        };
+        let health = kestrel_sync::ConnectParams {
+            host: preset.imap_host.clone(),
+            port: preset.imap_port,
+            security: imap_security,
+            username: preset
+                .username
+                .clone()
+                .unwrap_or_else(|| preset.email.clone()),
+            secret: secret.clone(),
+            mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
+            tls,
+            sasl_factory,
+        };
+        Some((smtp, health))
+    } else {
+        None
+    };
+
+    Some(accounts::AccountServicesSpec {
+        account: acct.id,
+        jmap: if is_jmap {
+            Some((acct.host.clone(), secret.clone()))
+        } else {
+            None
+        },
+        imap,
+        outbox,
+        store,
+        clock: Arc::clone(clock),
+        cfg,
+    })
 }
 
 /// Blob GC scheduler (schema.md §4.3): mark hourly, sweep after the
