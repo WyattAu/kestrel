@@ -56,8 +56,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # libgl1-mesa-dri: the Slint shell renders via femtovg/OpenGL; headless
-      # runners have no GPU, so software GL (llvmpipe) must be available.
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libgl1-mesa-dri libegl1 pkg-config xvfb
+      # runners have no GPU, so software GL (llvmpipe) must be available. The
+      # libxkbcommon/xcb set is what winit dlopens at startup under X11.
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0 pkg-config xvfb
       - name: Network-isolation test for the viewport (threat-model T3)
         run: bash scripts/webview-netns-test.sh
 
@@ -71,8 +72,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # libgl1-mesa-dri: the Slint shell renders via femtovg/OpenGL; headless
-      # runners have no GPU, so software GL (llvmpipe) must be available.
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libgl1-mesa-dri libegl1 pkg-config xvfb
+      # runners have no GPU, so software GL (llvmpipe) must be available. The
+      # libxkbcommon/xcb set is what winit dlopens at startup under X11.
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0 pkg-config xvfb
       - run: cargo build -p kestrel-tui -p kestrel-gui --release
       - name: Measure GUI startup + idle RSS
         run: bash scripts/measure-process-startup.sh target/release/kestrel-gui --xvfb

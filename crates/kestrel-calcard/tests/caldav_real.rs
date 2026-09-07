@@ -43,10 +43,20 @@ fn base_url() -> String {
 /// Ensures a test calendar exists by creating one via MKCOL.
 async fn ensure_test_calendar(_client: &CalDavClient) -> String {
     let base = base_url();
+    // Radicale runs htpasswd auth (config in tests/integration/radicale/), so
+    // the MKCOL must authenticate or radicale 401s and the calendar is never
+    // created (the client param is unused because reqwest builds the request).
+    let user = std::env::var("CALDAV_USER").unwrap_or_else(|_| "kestrel".into());
+    let pass = std::env::var("CALDAV_PASS").unwrap_or_else(|_| "test".into());
+    let auth = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+    );
     // Radicale path: /{username}/{collection_name}/
     let cal_url = format!("{base}/kestrel/test/");
     let _ = reqwest::Client::new()
         .put(&cal_url)
+        .header("Authorization", auth)
         .header("Content-Type", "text/xml")
         .body(
             r#"<?xml version="1.0" encoding="UTF-8"?>
