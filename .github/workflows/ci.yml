@@ -387,11 +387,14 @@ jobs:
 
   mobile-cross:
     runs-on: ubuntu-latest
+    # aarch64 only: the x86_64-android (emulator) leg cannot build the
+    # engine's vendored OpenSSL — openssl-src emits SM4/VAES asm the NDK
+    # assembler rejects (tracked in issue #18). The realistic device target
+    # is aarch64.
     strategy:
       matrix:
         target:
           - aarch64-linux-android
-          - x86_64-linux-android
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
