@@ -210,6 +210,21 @@ fn gpg_signs_encrypts_kestrel_decrypts_and_reports_signer() {
         ],
     );
     let ciphertext = std::fs::read(dir.path().join("signed-enc.asc")).unwrap();
+    // TEMP diagnostic: dump the packet layout + gpg version for CI triage.
+    let ver = Command::new("gpg").arg("--version").output().unwrap();
+    eprintln!(
+        "gpg: {}",
+        String::from_utf8_lossy(&ver.stdout).lines().next().unwrap()
+    );
+    let dump = run(
+        "gpg",
+        &[
+            "--list-packets",
+            dir.path().join("signed-enc.asc").to_str().unwrap(),
+        ],
+        &home,
+    );
+    eprintln!("packets:\n{}", String::from_utf8_lossy(&dump.stdout));
     let (plaintext, signed_by) = openpgp::decrypt(
         &recipient,
         &empty_pw(),
