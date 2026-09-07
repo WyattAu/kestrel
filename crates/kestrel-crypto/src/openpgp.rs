@@ -2,13 +2,15 @@
 //! Streaming stack per Sequoia's documented pattern: `Message` →
 //! `Armorer`/`Encryptor`/`Signer` → `LiteralWriter` → `finalize`.
 //!
-//! **Known interop limitation:** `GnuPG` ≥ 2.4 defaults new encryptions to the
-//! AEAD packet form (tag 20, `OCB`), and `--rfc4880` does not disable it;
-//! Sequoia 2.4.x has no AEAD *decrypt* path, so such messages are rejected
-//! with a policy error. Senders using gpg ≥ 2.4 must pass `--aead-algo none`
-//! (or downgrade the default via `--personal-aead-preferences`) until a
-//! Sequoia release with AEAD decryption is adopted (backlog #15 interop
-//! matrix reproduces this against gpg 2.4.4).
+//! **Known interop limitation:** `GnuPG` 2.4.4 (Ubuntu 24.04) shipped
+//! AEAD-by-default (tag 20, `OCB`) and ignores every AEAD-suppression flag
+//! (`--rfc4880`, `--aead-algo none`); the default was reverted in 2.4.5.
+//! Sequoia 2.4.x has no AEAD *decrypt* path, so messages from that gpg
+//! build are rejected with a policy error and are undecryptable until a
+//! Sequoia release with AEAD decryption is adopted. The interop matrix
+//! (`tests/cli_interop.rs`) runs the gpg-encrypts → kestrel-decrypts
+//! directions on fixed builds (≥ 2.4.5, incl. current gpg) and skips the
+//! 2.4.4 window explicitly.
 
 use std::io::{Read as _, Write as _};
 
