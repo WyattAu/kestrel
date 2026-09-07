@@ -90,7 +90,7 @@ fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     p
 }
 
-/// GnuPG 2.4.4 shipped AEAD-by-default (later reverted in 2.4.5) and ignores
+/// `GnuPG` 2.4.4 shipped AEAD-by-default (later reverted in 2.4.5) and ignores
 /// every AEAD-suppression flag (`--rfc4880`, `--aead-algo none/0/1`). Sequoia
 /// 2.4.x has no AEAD *decrypt* path, so gpg-encrypted messages from that
 /// version window are undecryptable by kestrel — the matrix directions that
@@ -120,8 +120,10 @@ fn gpg_aead_default_regression() -> bool {
 #[test]
 #[ignore = "requires gpg + openssl CLIs (run by the cli-interop CI job)"]
 fn gpg_encrypts_to_kestrel_key_kestrel_decrypts() {
+    // gpg 2.4.4's AEAD-by-default output is undecryptable by Sequoia 2.4.x
+    // (see gpg_aead_default_regression + the openpgp module docs): the
+    // direction cannot pass on that build, so it runs only on fixed ones.
     if gpg_aead_default_regression() {
-        eprintln!("skipped: gpg 2.4.4 AEAD-by-default is undecryptable by Sequoia 2.4.x");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -206,8 +208,10 @@ fn kestrel_signature_verified_by_gpg() {
 #[test]
 #[ignore = "requires gpg + openssl CLIs (run by the cli-interop CI job)"]
 fn gpg_signs_encrypts_kestrel_decrypts_and_reports_signer() {
+    // gpg 2.4.4's AEAD-by-default output is undecryptable by Sequoia 2.4.x
+    // (see gpg_aead_default_regression + the openpgp module docs): the
+    // direction cannot pass on that build, so it runs only on fixed ones.
     if gpg_aead_default_regression() {
-        eprintln!("skipped: gpg 2.4.4 AEAD-by-default is undecryptable by Sequoia 2.4.x");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
