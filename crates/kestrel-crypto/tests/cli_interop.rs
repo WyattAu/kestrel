@@ -111,6 +111,10 @@ fn gpg_encrypts_to_kestrel_key_kestrel_decrypts() {
             "--trust-model",
             "always",
             "--armor",
+            // --aead-algo none: gpg >= 2.4 defaults to AEAD (tag 20), which
+            // Sequoia 2.4.1 cannot decrypt; pin the classic SEIP form.
+            "--aead-algo",
+            "none",
             "--encrypt",
             "--recipient",
             "krecip@example.org",
@@ -194,10 +198,10 @@ fn gpg_signs_encrypts_kestrel_decrypts_and_reports_signer() {
             "--trust-model",
             "always",
             "--armor",
-            // --rfc4880: pin the classic packet format. Newer gpg defaults
-            // (2.4.4 on CI) may emit AEAD packets Sequoia's policy rejects;
-            // RFC 4880 output is what both versions and Sequoia accept.
-            "--rfc4880",
+            // --aead-algo none: pin the classic SEIP form (see direction 1).
+            // --rfc4880 does NOT disable AEAD in gpg >= 2.4.
+            "--aead-algo",
+            "none",
             "--sign",
             "--local-user",
             "signer@example.org",
@@ -215,28 +219,6 @@ fn gpg_signs_encrypts_kestrel_decrypts_and_reports_signer() {
     eprintln!(
         "gpg: {}",
         String::from_utf8_lossy(&ver.stdout).lines().next().unwrap()
-    );
-    // TEMP diagnostic: dump packet layout (tolerates gpg's non-zero exit,
-    // which tries to auto-decrypt during listing).
-    let dump = Command::new("gpg")
-        .args([
-            "--homedir",
-            home.to_str().unwrap(),
-            "--list-packets",
-            dir.path().join("signed-enc.asc").to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    eprintln!("packets:\n{}", String::from_utf8_lossy(&dump.stdout));
-    eprintln!(
-        "keys:\n{}",
-        String::from_utf8_lossy(
-            &Command::new("gpg")
-                .args(["--homedir", home.to_str().unwrap(), "-K", "--with-colons"])
-                .output()
-                .unwrap()
-                .stdout
-        )
     );
     let (plaintext, signed_by) = openpgp::decrypt(
         &recipient,
