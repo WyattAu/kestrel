@@ -44,7 +44,8 @@ if [ "$APP" = "kestrel-tui" ]; then need script; fi
 # comm(5) is truncated to 15 bytes; both binary names fit.
 APP_COMM="$APP"
 
-# Polls /proc for a process whose comm matches the app; echoes its pid.
+# Polls /proc for a process whose comm (or cmdline, as a fallback) matches
+# the app; echoes its pid.
 find_app_pid() {
   local tries="${1:-2000}" i pid
   for ((i = 0; i < tries; i++)); do
@@ -85,6 +86,8 @@ for _ in $(seq 1 "$SAMPLES"); do
   now=$(date +%s%N)
   if [ -z "$APP_PID" ]; then
     echo "FAIL: $APP did not exec within 10s" >&2
+    echo "--- last app/wrapper output ---" >&2
+    tail -15 "$CRASH_LOG" >&2 || true
     kill -TERM "$WRAPPER" 2>/dev/null || true
     exit 1
   fi
