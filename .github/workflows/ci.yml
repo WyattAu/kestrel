@@ -395,34 +395,45 @@ jobs:
       # target on the toolchain cargo will actually use.
       - run: rustup target add ${{ matrix.target }}
       - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libsqlite3-dev pkg-config
-      # ring's build script needs the NDK clang for the target triple
-      # ("aarch64-linux-android-clang"), which only ships in the NDK.
+      # ring/sqlite/openssl build scripts need the NDK clang for the target
+      # triple ("<triple>-clang"), which only ships in the NDK; cc-rs does
+      # not auto-discover it here, so export the per-target CC/AR explicitly.
       - uses: android-actions/setup-android@v3
-      - name: Install Android NDK
+      - name: Install Android NDK and export target toolchain
         run: |
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager --install "ndk;26.3.11579264" >/dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264" >> "$GITHUB_ENV"
+          NDK="$ANDROID_SDK_ROOT/ndk/26.3.11579264"
+          BIN="$(ls -d "$NDK"/toolchains/llvm/prebuilt/*/bin | head -1)"
+          TRIPLE_CC_VAR="CC_${TARGET//-/_}"
+          TRIPLE_AR_VAR="AR_${TARGET//-/_}"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "$TRIPLE_CC_VAR=$BIN/${{ matrix.target }}21-clang" >> "$GITHUB_ENV"
+          echo "$TRIPLE_AR_VAR=$BIN/llvm-ar" >> "$GITHUB_ENV"
+          echo "$BIN" >> "$GITHUB_PATH"
+        env:
+          TARGET: ${{ matrix.target }}
       - run: cargo check --package kestrel-mobile --target ${{ matrix.target }}
 
   fuzz:
     runs-on: ubuntu-latest
     # cargo-fuzz drives rustc with -Z flags (libFuzzer + ASan): nightly is
     # mandatory. RUSTUP_TOOLCHAIN forces nightly over rust-toolchain.toml's
-    # pinned stable channel. RUSTFLAGS replaces the repo-wide -D warnings and
-    # adds the documented fix for cargo-fuzz's default musl target
-    # ("sanitizer is incompatible with statically linked libc").
+    # pinned stable channel. The taiki cargo-fuzz release binary is built for
+    # musl, so cargo-fuzz defaults the fuzz target to x86_64-unknown-linux-musl
+    # — but the fuzz graph pulls imap-next → native-tls → openssl-sys, which
+    # cannot build against a static libc. Force the GNU target (system
+    # openssl) and drop the repo-wide -D warnings (third-party lints).
     env:
       RUSTUP_TOOLCHAIN: nightly
-      RUSTFLAGS: "-C target-feature=-crt-static"
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz -> target
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev musl-tools pkg-config
-      - run: rustup target add x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libssl-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
@@ -433,7 +444,7 @@ jobs:
           FAIL=0
           for target in "${TARGETS[@]}"; do
             echo "::group::Fuzzing $target"
-            if cargo fuzz run "$target" -- -max_total_time=60 -max_len=4096; then
+            if cargo fuzz run "$target" --target x86_64-unknown-linux-gnu -- -max_total_time=60 -max_len=4096; then
               echo "$target: PASS (60s, no crash)"
             else
               echo "::error::$target: FUZZ CRASH DETECTED"

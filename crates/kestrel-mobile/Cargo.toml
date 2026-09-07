@@ -21,6 +21,12 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2"] }
 
+# imap-next (via kestrel-sync) has no rustls backend: native-tls pulls
+# openssl-sys, which needs a real OpenSSL for the android target. Build
+# OpenSSL from source for android only (host builds keep the system lib).
+[target.'cfg(target_os = "android")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
 
@@ -31,6 +37,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"
 ignored = [
   "kestrel-core",
   "kestrel-engine",
+  "openssl",
   "slint",
   "thiserror",
   "tokio",

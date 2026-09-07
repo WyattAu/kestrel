@@ -12,20 +12,21 @@ jobs:
   fuzz-deep:
     runs-on: ubuntu-latest
     # cargo-fuzz needs nightly (-Z flags); RUSTUP_TOOLCHAIN overrides the
-    # stable channel pinned in rust-toolchain.toml. RUSTFLAGS adds the
-    # documented fix for cargo-fuzz's default musl target ("sanitizer is
-    # incompatible with statically linked libc").
+    # stable channel pinned in rust-toolchain.toml. The taiki cargo-fuzz
+    # release binary is musl-built, so cargo-fuzz defaults the fuzz target to
+    # musl — but the fuzz graph pulls imap-next → native-tls → openssl-sys,
+    # which cannot build against a static libc. Force the GNU target (system
+    # openssl) and drop the repo-wide -D warnings.
     env:
       RUSTUP_TOOLCHAIN: nightly
-      RUSTFLAGS: "-C target-feature=-crt-static"
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz -> target
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev musl-tools pkg-config
-      - run: rustup target add x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libssl-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
@@ -37,7 +38,7 @@ jobs:
           FAIL=0
           for target in "${TARGETS[@]}"; do
             echo "::group::Deep fuzzing $target (${DURATION}s)"
-            if cargo fuzz run "$target" -- -max_total_time="$DURATION" -max_len=4096; then
+            if cargo fuzz run "$target" --target x86_64-unknown-linux-gnu -- -max_total_time="$DURATION" -max_len=4096; then
               echo "$target: PASS"
             else
               echo "::error::$target: CRASH"
