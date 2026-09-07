@@ -17,7 +17,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
-wasmtime = "28"
+wasmtime = "48"
 
 [dev-dependencies]
 wat = "1"
