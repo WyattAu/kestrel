@@ -59,6 +59,42 @@ fn corpus_charset_transcoding_is_correct() {
 
     let gb = StalwartParser::parse(&get("gb2312.eml")).unwrap();
     assert_eq!(gb.text_body.unwrap_or_default().trim_end(), "你好");
+
+    let utf16 = StalwartParser::parse(&get("utf16le.eml")).unwrap();
+    assert_eq!(
+        utf16.text_body.unwrap_or_default().trim_end(),
+        "héllo wörld ✓"
+    );
+
+    let iso15 = StalwartParser::parse(&get("iso885915.eml")).unwrap();
+    assert_eq!(
+        iso15.text_body.unwrap_or_default().trim_end(),
+        "le prix est de 5 €"
+    );
+
+    // Quoted charset parameter with a trailing attribute must still decode.
+    let quoted = StalwartParser::parse(&get("quoted-charset-trailing-attr.eml")).unwrap();
+    assert!(quoted.text_body.unwrap_or_default().contains("café"));
+}
+
+#[test]
+fn corpus_rfc2047_mixed_words_decode_gracefully() {
+    let corpus = load_mime_corpus();
+    let (_, bytes) = corpus
+        .iter()
+        .find(|(n, _)| n.contains("adjacent-encoded-words-mixed-charsets.eml"))
+        .unwrap_or_else(|| panic!("missing adjacent-encoded-words in corpus"))
+        .to_owned();
+    let parsed = StalwartParser::parse(&bytes).unwrap();
+    // Adjacent encoded words in different charsets must both decode:
+    // latin-1 caf=E9 -> "café", utf-8 IMmg -> " é" (space + U+00E9).
+    let subject = parsed.subject.unwrap_or_default();
+    assert!(
+        subject.starts_with("café"),
+        "latin-1 word decoded: {subject:?}"
+    );
+    assert!(subject.contains('é'), "utf-8 word decoded: {subject:?}");
+    assert!(subject.contains('!'), "trailing literal kept: {subject:?}");
 }
 
 #[test]

@@ -19,55 +19,80 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Host-arch legs build both frontends. The aarch64-linux leg is
+          # cross-compiled and therefore TUI-only: kestrel-gui links wry →
+          # WebKitGTK, which has no aarch64 cross sysroot on ubuntu-latest
+          # (the packaged -dev:arm64 set is incomplete for webkit2gtk-4.1),
+          # and the engine's native-tls → openssl-sys path needs an arm64
+          # OpenSSL, provided below via the arm64 libssl-dev multiarch
+          # packages. A native aarch64 runner (or a full arm64 webkit
+          # sysroot) is the tracked follow-up (issue #16).
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
+            crates: kestrel-tui kestrel-gui
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
             cross: true
+            crates: kestrel-tui
           - target: x86_64-apple-darwin
             os: macos-latest
             archive: tar.gz
+            crates: kestrel-tui kestrel-gui
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
+            crates: kestrel-tui kestrel-gui
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
+            crates: kestrel-tui kestrel-gui
 
     steps:
       - uses: actions/checkout@v4
 
+      # Same toolchain handling as ci.yml mobile-cross: rust-toolchain.toml
+      # pins channel "1.97.1" and cargo resolves to the version-named
+      # toolchain, not dtolnay's "stable" — so install each matrix target on
+      # the toolchain cargo will actually use.
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      - run: rustup target add ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
+      - name: Install cross-compilation toolchain (aarch64-linux)
         if: matrix.cross
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          # openssl-sys probes pkg-config; allow it to find the arm64
+          # libssl-dev:arm64 rather than the host x86_64 one.
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev pkg-config
+          # webkit2gtk-4.1/gtk-3: kestrel-gui's wry viewport links WebKitGTK.
+          # libssl-dev: the engine pulls reqwest -> native-tls -> openssl-sys.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libssl-dev pkg-config
 
       - name: Build release binaries
-        run: cargo build --release --target ${{ matrix.target }} -p kestrel-tui -p kestrel-gui
+        run: cargo build --release --locked --target ${{ matrix.target }} -p ${{ matrix.crates }}
 
       - name: Strip binaries (Unix)
         if: runner.os != 'Windows'
         run: |
-          strip target/${{ matrix.target }}/release/kestrel-tui || true
-          strip target/${{ matrix.target }}/release/kestrel-gui || true
+          for bin in ${{ matrix.crates }}; do
+            strip "target/${{ matrix.target }}/release/$bin" || true
+          done
 
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
@@ -75,8 +100,9 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           STAGING="kestrel-${VERSION}-${{ matrix.target }}"
           mkdir -p "${STAGING}"
-          cp "target/${{ matrix.target }}/release/kestrel-tui" "${STAGING}/"
-          cp "target/${{ matrix.target }}/release/kestrel-gui" "${STAGING}/"
+          for bin in ${{ matrix.crates }}; do
+            cp "target/${{ matrix.target }}/release/$bin" "${STAGING}/"
+          done
           tar czf "${STAGING}.tar.gz" "${STAGING}"
           echo "ASSET=${STAGING}.tar.gz" >> "$GITHUB_ENV"
 
@@ -87,8 +113,9 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           STAGING="kestrel-${VERSION}-${{ matrix.target }}"
           mkdir -p "${STAGING}"
-          cp "target/${{ matrix.target }}/release/kestrel-tui.exe" "${STAGING}/"
-          cp "target/${{ matrix.target }}/release/kestrel-gui.exe" "${STAGING}/"
+          for bin in ${{ matrix.crates }}; do
+            cp "target/${{ matrix.target }}/release/$bin.exe" "${STAGING}/"
+          done
           7z a "${STAGING}.zip" "${STAGING}"
           echo "ASSET=${STAGING}.zip" >> "$GITHUB_ENV"
 
@@ -105,7 +132,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+      # Full workspace compile (unit + doc tests), so mirror the job dep set
+      # that makes ci.yml's test/integration jobs green.
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev libssl-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest

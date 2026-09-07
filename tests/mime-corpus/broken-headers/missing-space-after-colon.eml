@@ -1,0 +1,6 @@
+Subject: Re:FW:no space after colon
+From: a@example.org
+To: b@example.org
+Message-ID: <no-space@example.org>
+
+seen in the wild: header value glued to the colon

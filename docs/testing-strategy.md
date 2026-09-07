@@ -14,6 +14,7 @@ Status: **v1.0 — binding** · Governs every phase's exit criteria
 | Property tests | same module as the unit under test, `proptest` | default profile |
 | Integration tests | `crates/<crate>/tests/*.rs` | default profile |
 | Docker-gated integration | `crates/*/tests/integration.rs`, every test `#[ignore]`d and named `integration_*` | `--profile integration` |
+| Crypto CLI interop (backlog #15) | `kestrel-crypto/tests/cli_interop.rs`, `#[ignore]`d; round-trips vs `gpg` and `openssl smime` | `cli-interop` CI job (`--run-ignored ignored-only`) |
 | MIME corpus | `tests/mime-corpus/` at workspace root, loaded via `kestrel-core::testkit::mime_corpus()` | default profile |
 | Fuzz targets | `fuzz/` workspace member (`cargo-fuzz`) | scheduled/CI-cron, smoke in CI |
 | Benchmarks | `crates/kestrel-storage/benches/`, TUI/GUI start harnesses | `cargo bench`, CI compile + nightly run |

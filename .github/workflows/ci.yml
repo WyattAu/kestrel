@@ -350,6 +350,22 @@ jobs:
       # the whole linked tree) is not a meaningful proxy and was failing on
       # its own allocator noise.
 
+  cli-interop:
+    runs-on: ubuntu-latest
+    # Backlog #15: OpenPGP (gpg) and S/MIME (openssl) reference-CLI round
+    # trips. Tests are #[ignore]d (plain runs stay hermetic); this job
+    # installs the CLIs and force-runs them.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y gnupg openssl pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run OpenPGP + S/MIME CLI interop matrix
+        run: cargo nextest run -p kestrel-crypto --test cli_interop --run-ignored ignored-only
+
   providers:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'

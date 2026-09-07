@@ -1,0 +1,5 @@
+From: a@example.org
+To: b@example.org
+Subject: lone CR line breakX-Lone-CR: value
+
+body with lone CR inside headers

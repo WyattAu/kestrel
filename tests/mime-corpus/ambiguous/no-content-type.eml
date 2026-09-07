@@ -1,0 +1,5 @@
+From: a@example.org
+To: b@example.org
+Subject: no content-type at all
+
+defaults to text/plain

@@ -1,0 +1,4 @@
+From: a@example.org
+To: b@example.org
+Subject: continuation
+ runs to end of file without a blank line or terminator
