@@ -55,7 +55,7 @@ async fn ensure_test_calendar(_client: &CalDavClient) -> String {
     // Radicale path: /{username}/{collection_name}/
     let cal_url = format!("{base}/kestrel/test/");
     let _ = reqwest::Client::new()
-        .put(&cal_url)
+        .request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &cal_url)
         .header("Authorization", auth)
         .header("Content-Type", "text/xml")
         .body(
