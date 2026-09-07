@@ -42,8 +42,11 @@ Remaining gaps:
 - **Phase 4 security matrix:** every §7 row (T1–T7) now has named,
   CI-enforced coverage — including the `unshare -n` webview
   network-isolation runtime test (issue #6, `scripts/webview-netns-test.sh`)
-  and a real-binary cold-start/RSS harness (issue #3,
-  `scripts/measure-process-startup.sh`, post-merge job). The coverage-gate
+  and a real-binary startup/RSS harness (issue #3,
+  `scripts/measure-process-startup.sh`, post-merge job): it times the app's
+  exec-to-detect boot and gates the real process's idle RSS against the
+  requirements §8 hard limits (TUI 40 MB / GUI 200 MB); the interactive
+  cold-start SLA stays with the criterion benches. The coverage-gate
   decision (issue #10) and the §7 matrix rows are enforced by
   `scripts/check-threat-matrix.sh` in the `test` job.
 

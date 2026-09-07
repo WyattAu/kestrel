@@ -57,10 +57,12 @@ Rules:
 | Query builder round-trip | `kestrel-storage::search` | random structured queries → Tantivy query → parse back ⇒ equal |
 | CAS write idempotence | `kestrel-storage::blob` | random bytes; write twice ⇒ one file, refcount stable; delete with live refs ⇒ keep |
 
-Shrinking budget: CI runs proptest with `cases = 256` (via `KESTREL_PROPTOP_CASES`
+Shrinking budget: CI runs proptest with `cases = 256` (via the `PROPTEST_CASES`
 env var), `max_shrink_iters = 4096`; local dev defaults to 128 (overridable via
-`KESTREL_PROPTOP_CASES`). The `proptest_cases()` helper reads
-`KESTREL_PROPTOP_CASES` to allow per-target tuning.
+`PROPTEST_CASES`). The `proptest_cases()` helper reads `PROPTEST_CASES` to allow
+per-target tuning. The variable is deliberately **not** `KESTREL_`-prefixed:
+`Config::load` merges every `KESTREL_*` variable as layered config and rejects
+unknown keys, so a `KESTREL_`-prefixed test knob breaks configuration loading.
 
 ## 4. Fuzzing (`cargo-fuzz`)
 

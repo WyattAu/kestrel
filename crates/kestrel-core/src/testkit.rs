@@ -63,10 +63,15 @@ pub fn mime_corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/mime-corpus")
 }
 
-/// Returns the proptest case count, configurable via `KESTREL_PROPTOP_CASES` env var.
+/// Returns the proptest case count, configurable via `PROPTEST_CASES` env var.
+///
+/// Deliberately NOT `KESTREL_`-prefixed: `Config::load` treats every
+/// `KESTREL_*` environment variable as layered config and rejects unknown
+/// keys, so a `KESTREL_PROPTOP_CASES` leaked into the config namespace and
+/// broke every config test under CI.
 #[must_use]
 pub fn proptest_cases() -> u32 {
-    std::env::var("KESTREL_PROPTOP_CASES")
+    std::env::var("PROPTEST_CASES")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(128)
