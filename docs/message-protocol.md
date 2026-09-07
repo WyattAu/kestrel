@@ -32,7 +32,7 @@ EventReceiver ── broadcast ◀────── EventBus (all services publ
 ```rust
 pub struct Command {
     pub id: RequestId,          // uuid v7, monotonic; echoed in events
-    pub origin: FrontendKind,   // Tui | Gui
+    pub origin: FrontendKind,   // Tui | Gui | Mobile (ADR 0013)
     pub payload: CommandPayload,
 }
 
@@ -42,6 +42,8 @@ pub enum CommandPayload {
     ListFolders { account: AccountId, reply: oneshot::Sender<Reply> },
     ListMessages { folder: FolderId, window: Window, sort: SortSpec,
                    reply: oneshot::Sender<Reply> },
+    ListUnifiedInbox { window: Window, sort: SortSpec,
+                       reply: oneshot::Sender<Reply> },
     GetMessage { message: MessageId, body: BodyPreference,
                  reply: oneshot::Sender<Reply> },
     Search { query: SearchQuery, reply: oneshot::Sender<Reply> },
@@ -60,7 +62,10 @@ pub enum CommandPayload {
                     reply: oneshot::Sender<Reply> },
 
     // Sync control
-    TriggerSync { account: AccountId, kind: SyncKind },   // fire-and-forget
+    TriggerSync { account: AccountId, kind: SyncKind },   // fire-and-forget; per-account
+                                                          // services run autonomously today,
+                                                          // so an explicit trigger is a
+                                                          // no-op until phase-2 wiring lands
     GoOffline, GoOnline,
     ResyncState { reply: oneshot::Sender<Reply> },        // after lag
 
@@ -110,6 +115,7 @@ pub enum EngineEvent {
 
     // Composition
     OutboxEnqueued { id: OutboxId },
+    SnoozeExpired { message: MessageId, account: AccountId, folder: FolderId },
     OutboxRetry { id: OutboxId, attempt: u32, next_in: Duration, last_error: String },
     MailSent { id: OutboxId, message: MessageId },
     MailFailed { id: OutboxId, error: ServiceError, permanent: bool },
@@ -126,6 +132,14 @@ pub enum EngineEvent {
     EventStreamLagged { missed: u64 },
 }
 ```
+
+### 3.1 `ServiceId` registry
+
+`ServiceDegraded` events identify the failing service by `ServiceId`. Current
+registry (as of `PROTOCOL_VERSION 2`): `Storage`, `Index`,
+`Search`, `Outbox`, `Credentials`, `Config`, `Sync(AccountId)`,
+`Filter`, `Snooze`, `Maintenance` (GC scheduler). Additions are additive
+enum variants (minor, per §7).
 
 ## 4. Backpressure & Overflow Policy
 

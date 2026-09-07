@@ -1,16 +1,20 @@
 # Kestrel
 
-A high-performance, modular email client in Rust with two frontends sharing
-one core engine:
+A high-performance, modular email client in Rust with frontends sharing one
+core engine:
 
 - **`kestrel-tui`** — keyboard-driven terminal client (ratatui)
 - **`kestrel-gui`** — native desktop client (Slint shell + sandboxed webview
   for HTML mail)
+- **`kestrel-mobile`** — Slint mobile shell (ADR 0013; platform stubs)
 
 Offline-first, IMAP/JMAP + SMTP, SQLite + Tantivy full-text search,
 zero-trust HTML rendering. Licensed under [Apache-2.0](LICENSE).
 
-Status: **Phase 1 in progress** — see the [roadmap](docs/roadmap.md).
+Status: implementation is **ahead of the roadmap** — core storage/parsing,
+sync, TUI and GUI code all exist (see the [roadmap](docs/roadmap.md) status
+column for what is wired vs. outstanding, and ADRs 0011–0014 for the crates
+added beyond the v1 spec).
 
 ## Documentation
 

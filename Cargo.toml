@@ -84,8 +84,8 @@ mail-parser = { version = "0.11", features = ["full_encoding"] }
 # moment mailkit fixes the gate.
 mailkit = { version = "0.2", default-features = false, features = ["resend"] }
 encoding_rs = "0.8"
-# HTML sanitizer for rendered mail (ADR 0013: defense-in-depth alongside the
-# webview CSP sandbox)
+# HTML sanitizer for rendered mail (requirements §4.2; defense-in-depth
+# beneath the webview CSP sandbox — threat-model M14–M16)
 ammonia = "4"
 # Markdown → HTML for multipart/alternative composition (requirements §5;
 # engine-side so both frontends share one builder)

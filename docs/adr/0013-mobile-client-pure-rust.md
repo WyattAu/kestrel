@@ -1,7 +1,10 @@
 # ADR 0013: Mobile Client — Pure Rust with Slint Mobile
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-31
+- **Updated:** 2026-09-07 — accepted; `kestrel-mobile` (Slint mobile shell,
+  platform stubs, `FrontendKind::Mobile`) is implemented in-tree ahead of the
+  roadmap (Phase 4/5).
 - **Deciders:** Kestrel team
 
 ## Context

@@ -9,9 +9,10 @@ as ADRs (see `docs/adr/`).
 
 Kestrel is a modular, offline-first email client written in Rust. A single
 asynchronous **core engine** owns all protocol, storage, indexing, and crypto
-work. Two frontends — a terminal UI (`kestrel-tui`) and a native desktop GUI
-(`kestrel-gui`) — are pure clients of the engine. They share no state with it
-except through the typed message protocol (`docs/message-protocol.md`).
+work. The frontends — a terminal UI (`kestrel-tui`), a native desktop GUI
+(`kestrel-gui`), and the Slint mobile client (`kestrel-mobile`, ADR 0013) —
+are pure clients of the engine. They share no state with it except through
+the typed message protocol (`docs/message-protocol.md`).
 
 ```
 ┌─────────────────┐        ┌─────────────────┐
@@ -45,7 +46,9 @@ kestrel-tui ──┐                    ┌── kestrel-gui
     kestrel-sync ──> kestrel-core
     kestrel-storage ──> kestrel-core
     kestrel-crypto ──> kestrel-core
-    kestrel-engine ──> core+sync+storage+crypto (assembly only, ADR 0011)
+    kestrel-filter ──> kestrel-core
+    kestrel-calcard ──> kestrel-core
+    kestrel-engine ──> core+sync+storage+crypto+filter+calcard (assembly only, ADR 0011)
 ```
 
 | Crate | Owns | May depend on |
@@ -54,16 +57,22 @@ kestrel-tui ──┐                    ┌── kestrel-gui
 | `kestrel-sync` | IMAP/JMAP/SMTP engines, sync state machine, IDLE loops | `kestrel-core` |
 | `kestrel-storage` | SQLite (ADR 0003), Tantivy index, blob CAS | `kestrel-core` |
 | `kestrel-crypto` | keyring/GPG credential store, OpenPGP (Phase 5), TLS config, SASL/OAuth2 flows | `kestrel-core` |
-| `kestrel-engine` | Service assembly: supervisor, router, event bus (ADR 0011); no domain logic | all four core-side crates |
+| `kestrel-filter` | Filter-rule evaluation engine | `kestrel-core` |
+| `kestrel-calcard` | CalDAV/CardDAV types and client stubs (RFC 4791/6352) | `kestrel-core` |
+| `kestrel-engine` | Service assembly: supervisor, router, event bus (ADR 0011); no domain logic | all core-side crates incl. `filter`/`calcard` |
+| `kestrel-plugin` | WASM plugin sandbox: manifest, capabilities, wasmtime runtime (ADR 0014); host wiring deferred | `kestrel-core` |
 | `kestrel-tui` | ratatui frontend, `$EDITOR` composition | `kestrel-core` (types) + `kestrel-engine` (spawn, binary only) |
 | `kestrel-gui` | Slint shell (ADR 0001), wry viewport, tray/notifications | `kestrel-core` (types) + `kestrel-engine` (spawn, binary only) |
+| `kestrel-mobile` | Slint mobile shell + platform stubs (ADR 0013) | `kestrel-core` (types) + `kestrel-engine` (spawn, binary only) |
 
 **Binding rules** (enforced in review, see `docs/engineering-standards.md`):
 
 1. Core crates never import frontend crates; frontends never import each
    other's crates; neither frontend is imported by anything.
-2. `kestrel-core` is dependency-light: no UI, no async runtime beyond trait
-   bounds, no storage backends. It is the vocabulary, not the engine.
+2. `kestrel-core` is dependency-light: no UI frameworks, no storage
+   backends, no network clients (config watching needs tokio primitives,
+   which stay confined to `core::config`). It is the vocabulary, not the
+   engine.
 3. Lateral communication between `kestrel-sync`/`kestrel-storage`/
    `kestrel-crypto` happens **only** through the core's service protocol at
    runtime — no direct crate-level calls between them.
@@ -81,11 +90,16 @@ the frontend (both binaries; see §7).
   unbounded latency; it polls a filled mailbox or receives on a dedicated
   channel and repaints.
 - **Core supervisor task:** owns service lifecycle (start, health, restart,
-  shutdown) per ADR 0004.
-- **One service task per responsibility:** `SyncService` (per account),
-  `StorageService`, `IndexService`, `SearchService`, `OutboxService`,
-  `CredentialService`. Config watching is implemented as a function
-  (`watch_config()`) in the engine assembly, not a standalone `ServiceId`.
+  shutdown) per ADR 0004. The supervisor (`kestrel-engine::supervisor`) wraps
+  every long-running engine task; a panic or `Err` emits `ServiceDegraded`
+  on the bus and restarts with exponential backoff + jitter.
+- **One service task per responsibility:** `SyncService`/`JmapSyncService`
+  (per account), `StorageService`, `IndexService`, `SearchService`,
+  `OutboxService`, `CredentialService`, `FilterService`, the snooze-expiry
+  poller, and the blob-GC/maintenance scheduler. Config watching is a
+  function (`watch_config()`) run under supervision and reported as
+  `ServiceId::Config`; GC and snooze report as `ServiceId::Maintenance` and
+  `ServiceId::Snooze` respectively.
 - **Blocking-pool usage only** for genuinely blocking FFI (keyring, webview
   glue) via `tokio::task::spawn_blocking`.
 
@@ -105,11 +119,12 @@ the frontend (both binaries; see §7).
 - **Graceful shutdown order:** frontends detach → services cancel (CancellationToken)
   → OutboxService performs a final bounded flush (≤ 5 s) → storage checkpoint
   → process exit. SIGINT/SIGTERM trigger the same path.
-- **Service crash:** a panicking service task is caught by the supervisor,
-  which emits `ServiceDegraded` on the event bus and restarts the service with
-  exponential backoff + jitter (cap 5 min). Sync services re-enter the
-  Disconnected state and revalidate cache integrity (`UIDVALIDITY` check)
-  before resuming.
+- **Service crash:** a panicking service task (config watcher, GC,
+  snooze, filter, outbox, per-account IMAP/JMAP sync) is caught by the
+  supervisor, which emits `ServiceDegraded` on the event bus and restarts
+  the service with exponential backoff + jitter (cap 5 min). Sync services
+  re-enter the Disconnected state and revalidate cache integrity
+  (`UIDVALIDITY` check) before resuming.
 - **Process crash:** SQLite WAL guarantees consistency; the blob store is
   content-addressed and therefore append-safe; on next start the engine
   performs a cheap integrity pass and a Tantivy `validate`/repair.

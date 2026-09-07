@@ -1,6 +1,6 @@
 # Kestrel: Technical Requirements Specification (v1.0)
 
-This document establishes the architectural, protocol, security, storage, and interface requirements for **Kestrel**—a high-performance, modular email client written in Rust that powers both a Terminal UI (`kestrel-tui`) and a Native Desktop GUI (`kestrel-gui`).
+This document establishes the architectural, protocol, security, storage, and interface requirements for **Kestrel**—a high-performance, modular email client written in Rust that powers a Terminal UI (`kestrel-tui`), a Native Desktop GUI (`kestrel-gui`), and a mobile client (`kestrel-mobile`, ADR 0013).
 
 ---
 
@@ -9,15 +9,26 @@ This document establishes the architectural, protocol, security, storage, and in
 ```
 kestrel/
 ├── crates/
-│   ├── kestrel-core/       # Domain types, config, error taxonomy, traits
-│   ├── kestrel-sync/       # IMAP/JMAP/SMTP network engines & state machines
-│   ├── kestrel-storage/    # SQLite metadata, Tantivy indexing, blob storage
-│   ├── kestrel-crypto/     # Credential storage, GPG/OpenPGP, TLS configuration
-│   ├── kestrel-tui/        # Ratatui frontend
-│   └── kestrel-gui/        # Native desktop shell + embedded Wry viewport
+│   ├── kestrel-core/       # Domain types, config, error taxonomy, protocol, traits
+│   ├── kestrel-sync/       # IMAP/JMAP/SMTP network engines, sync state machines, outbox
+│   ├── kestrel-storage/    # SQLite metadata, Tantivy indexing, blob CAS
+│   ├── kestrel-crypto/     # Credential storage, SASL/OAuth2, TLS, OpenPGP/S-MIME
+│   ├── kestrel-engine/     # Service assembly: supervisor, router, event bus (ADR 0011)
+│   ├── kestrel-filter/     # Filter-rule engine for automated mail processing
+│   ├── kestrel-calcard/    # CalDAV/CardDAV types and client stubs (RFC 4791 / RFC 6352)
+│   ├── kestrel-plugin/     # WASM plugin sandbox: manifest, capabilities, host API (ADR 0014)
+│   ├── kestrel-tui/        # Ratatui terminal frontend
+│   ├── kestrel-gui/        # Native desktop shell + embedded Wry viewport
+│   └── kestrel-mobile/     # Slint mobile shell + platform integration stubs (ADR 0013)
 ├── Cargo.toml
 └── README.md
 ```
+
+The crate set has grown beyond the v1.0 tree as work shipped ahead of the
+milestones: `kestrel-engine` is mandated by ADR 0011, `kestrel-filter` and
+`kestrel-calcard` are engine-adjacent crates composed by `kestrel-engine`,
+`kestrel-plugin` by ADR 0014, and `kestrel-mobile` by ADR 0013. Each new
+crate is decided in an ADR and milestone-gated in `docs/roadmap.md`.
 
 ### 1.1 Concurrency & Execution Model
 
@@ -227,8 +238,11 @@ No frame drops
 
 ## 9. Implementation Roadmap & Milestones
 
-- **Phase 1 (Core Storage & Parsing):** `kestrel-core`, SQLite schema, MIME parser, Tantivy indexing pipeline.
-- **Phase 2 (Sync Engine):** IMAP `FETCH`/`IDLE`/`STORE`, SMTP sender, OAuth2 loopback, background queue.
-- **Phase 3 (TUI MVP):** `kestrel-tui` built on `ratatui`, `$EDITOR` integration, keyboard-driven navigation.
-- **Phase 4 (GUI MVP):** `kestrel-gui` shell, `wry` sandboxed body viewport, system notifications.
-- **Phase 5 (Hardening):** Broken MIME stress testing, JMAP provider support, OpenPGP (Sequoia-PGP) signing/encryption.
+- **Phase 1 (Core Storage & Parsing):** `kestrel-core`, SQLite schema, MIME parser, Tantivy indexing pipeline. *Landed:* dual-DB sqlx migrations, mail-parser adapter (ADR 0002), Tantivy index + search, JWZ-lite threading, blob CAS + two-phase GC.
+- **Phase 2 (Sync Engine):** IMAP `FETCH`/`IDLE`/`STORE`, SMTP sender, OAuth2 loopback, background queue. *Code present:* IMAP/JMAP sync services, SMTP/outbox with backoff, OAuth2 PKCE loopback, credential service (see `docs/sync-engine.md`). *Implemented:* per-account IMAP sync resume for stored accounts at startup (JMAP, generic-IMAP, preset-provider outbox) and the ordered `EngineHandle::shutdown` drain. *Outstanding:* `TriggerSync` wiring.
+- **Phase 3 (TUI MVP):** `kestrel-tui` built on `ratatui`, `$EDITOR` integration, keyboard-driven navigation. *MVP implemented* (3-pane + focus, vi keys, OSC 8, `$EDITOR` composition, Markdown → `multipart/alternative`).
+- **Phase 4 (GUI MVP):** `kestrel-gui` shell, `wry` sandboxed body viewport, system notifications. *Shell + viewport implemented* (Slint, ADR 0001); wry security test matrix partially green.
+- **Phase 5 (Hardening):** Broken MIME stress testing, JMAP provider support, OpenPGP (Sequoia-PGP) signing/encryption. *Landed early:* OpenPGP sign/encrypt via Sequoia 2.x (ADR 0012), S/MIME (CMS) sign/verify, and the JMAP sync engine; broken-MIME hardening and SLA tuning remain.
+
+Phase status is tracked in `docs/roadmap.md`; the exit criteria above remain
+authoritative regardless of how far the code is ahead of a milestone.

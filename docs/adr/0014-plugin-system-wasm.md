@@ -1,7 +1,10 @@
 # ADR 0014: Plugin System — WASM via wasmtime
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-31
+- **Updated:** 2026-09-07 — accepted; the `kestrel-plugin` crate (manifest,
+  capability model, wasmtime host runtime, wasm-level tests) is implemented
+  in-tree. Engine host wiring remains deferred (see `docs/roadmap.md`).
 - **Deciders:** Kestrel team
 
 ## Context

@@ -29,7 +29,7 @@ Integration tests (Docker needed): `cargo nextest run --profile integration`.
 
 ## Hard rules
 
-- **No ADR violations.** Check `docs/adr/0001`–`0012` before adding
+- **No ADR violations.** Check `docs/adr/0001`–`0015` before adding
   dependencies or touching concurrency, storage, parsing, config, errors, or
   logging.
 - **Frontends** (`kestrel-tui`, `kestrel-gui`) depend only on `kestrel-core`.
@@ -67,8 +67,11 @@ Integration tests (Docker needed): `cargo nextest run --profile integration`.
 
 ## Current status
 
-Documentation and CI infrastructure phase complete. Phase 1 (core storage &
-parsing) is the active development milestone — see `docs/roadmap.md`.
+Documentation and CI infrastructure phase complete. Core storage & parsing
+are implemented and CI-green; the sync engine, TUI, GUI, and crypto code sit
+**ahead of** the roadmap milestones. `docs/roadmap.md` has a “Known gaps”
+section documenting what is wired vs. outstanding (`TriggerSync` wiring, the
+`unshare` webview isolation test, and the CI baseline regression gate).
 
 **CI pipelines:**
 - `ci.yml` — lint, test, integration, sqlx, doc, supply-chain, benches, coverage

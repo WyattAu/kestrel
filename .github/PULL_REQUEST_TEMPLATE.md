@@ -21,5 +21,6 @@
 - [ ] Message protocol unchanged, or change follows ADR process (2 reviews)
 - [ ] `docs/threat-model.md` updated if attack surface changed
 - [ ] `docs/` updated in this PR where behavior is described there
+- [ ] `docs/roadmap.md` Known-gaps section updated (gap closed → line removed; new gap → line added)
 - [ ] Benchmarks attached if a hot path changed (engineering-standards §5)
 - [ ] New dependencies listed here with justification (standards §6)
