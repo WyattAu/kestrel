@@ -2,7 +2,7 @@
 //! Streaming stack per Sequoia's documented pattern: `Message` →
 //! `Armorer`/`Encryptor`/`Signer` → `LiteralWriter` → `finalize`.
 //!
-//! **Known interop limitation:** GnuPG ≥ 2.4 defaults new encryptions to the
+//! **Known interop limitation:** `GnuPG` ≥ 2.4 defaults new encryptions to the
 //! AEAD packet form (tag 20, `OCB`), and `--rfc4880` does not disable it;
 //! Sequoia 2.4.x has no AEAD *decrypt* path, so such messages are rejected
 //! with a policy error. Senders using gpg ≥ 2.4 must pass `--aead-algo none`
