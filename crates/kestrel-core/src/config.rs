@@ -518,9 +518,16 @@ mod tests {
         Paths::nested_under(dir)
     }
 
+    // Config::load merges the KESTREL_* env namespace, so any test that sets
+    // one must not overlap a test that reads defaults in the same process.
+    // cargo-nextest isolates per test; plain `cargo test` and cargo-llvm-cov
+    // share one process, so the readers take the same lock the writer holds.
+    static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn defaults_load_without_file() {
         let tmp = tempfile::tempdir().unwrap();
+        let _guard = CONFIG_ENV_LOCK.lock().unwrap();
         let loaded = Config::load(&test_paths(tmp.path())).unwrap();
         assert_eq!(loaded.config.sync.poll_interval_secs, 120);
         assert_eq!(loaded.config.log.format, LogFormat::Pretty);
@@ -537,6 +544,7 @@ mod tests {
             "[sync]\npoll_interval_secs = 45\n[general]\ntheme = \"light\"\n",
         )
         .unwrap();
+        let _guard = CONFIG_ENV_LOCK.lock().unwrap();
         let loaded = Config::load(&paths).unwrap();
         assert_eq!(loaded.config.sync.poll_interval_secs, 45);
         assert_eq!(loaded.config.general.theme, "light");
@@ -572,8 +580,10 @@ mod tests {
         let paths = test_paths(tmp.path());
         paths.ensure().unwrap();
         std::fs::write(paths.config_file(), "[sync]\npoll_interval_secs = 45\n").unwrap();
-        // SAFETY(test): nextest runs each test in its own process; no
-        // concurrent env access. Var removed before assertions complete.
+        // Hold the shared lock across set→load→remove so parallel `cargo
+        // test` threads cannot observe the env var mid-flight (nextest
+        // isolates per test; the lock makes plain cargo test safe too).
+        let _guard = CONFIG_ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("KESTREL_SYNC__POLL_INTERVAL_SECS", "60");
         }
