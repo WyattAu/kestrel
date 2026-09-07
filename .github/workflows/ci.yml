@@ -89,7 +89,9 @@ jobs:
         run: docker compose -f tests/integration/docker-compose.yml up -d
       - name: Wait for services
         run: docker compose -f tests/integration/docker-compose.yml ps
-      - run: cargo nextest run --profile integration
+      # The docker-gated tests are #[ignore]d; --run-ignored is the supported
+      # way to force-run the ones the integration profile selects.
+      - run: cargo nextest run --profile integration --run-ignored ignored-only
         env:
           KESTREL_INTEGRATION: "1"
       - name: Tear down services

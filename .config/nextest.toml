@@ -9,7 +9,5 @@ slow-timeout = { period = "30s", terminate-after = 180, grace-period = "10s" }
 
 [profile.integration]
 default-filter = 'test(integration)'
-# The docker-gated tests are #[ignore]d; run them (and only them) here.
-run-ignored = "ignored-only"
 slow-timeout = { period = "120s", terminate-after = 600, grace-period = "30s" }
 retries = { backoff = "fixed", count = 2, delay = "5s" }
