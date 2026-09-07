@@ -63,9 +63,15 @@ async fn async_main() -> i32 {
         }
     };
 
-    if let Err(e) = kestrel_tui::event::run(handle, config).await {
-        eprintln!("kestrel-tui: {e}");
-        return 1;
+    let ui_result = kestrel_tui::event::run(handle.clone(), config).await;
+    // Ordered engine shutdown (architecture §3.3): stop supervised services,
+    // bounded outbox flush, storage checkpoint — even when the UI failed.
+    handle.shutdown(true).await;
+    match ui_result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("kestrel-tui: {e}");
+            1
+        }
     }
-    0
 }

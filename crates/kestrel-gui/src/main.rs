@@ -2989,6 +2989,17 @@ fn main() {
         eprintln!("kestrel-gui: {e}");
         std::process::exit(1);
     });
+
+    // Ordered engine shutdown (architecture §3.3): cancel supervised
+    // background services, bounded outbox flush, storage checkpoint. The
+    // engine runs on its own runtime thread, so drive the shutdown from a
+    // short-lived runtime here before the process exits.
+    if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        rt.block_on(handle.shutdown(true));
+    }
 }
 
 /// Set up the system tray icon with a context menu.

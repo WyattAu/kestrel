@@ -49,8 +49,11 @@ impl FilterService {
     ///
     /// Listens for `MailArrived` events and evaluates rules against new
     /// messages. Rules are reloaded when `ConfigUpdated` is received.
+    ///
+    /// Takes `&self` so a supervised task (ADR 0004) can restart the loop
+    /// on the same instance after a panic.
     #[instrument(skip_all)]
-    pub async fn run(self, cancel: CancellationToken) {
+    pub async fn run(&self, cancel: CancellationToken) {
         let mut events = self.bus.subscribe();
         let mut rules: Vec<FilterRule> = Vec::new();
         let regex_cache = RegexCache::default();

@@ -16,7 +16,7 @@ use kestrel_core::{
     config::Config,
     error::KestrelError,
     ids::{AccountId, IdGenerator},
-    protocol::{CommandPayload, EngineEvent, Reply, ShutdownStage, Window},
+    protocol::{CommandPayload, EngineEvent, Reply, ServiceId, ShutdownStage, Window},
 };
 use kestrel_storage::{
     FlagPayload, OpType, OutboxEnvelope, PendingOpPayload, SearchHandle, StorageHandle,
@@ -24,7 +24,7 @@ use kestrel_storage::{
 use tokio::sync::mpsc;
 use tracing::{Instrument, instrument};
 
-use crate::bus::EventBus;
+use crate::{bus::EventBus, supervisor::spawn_supervised};
 
 /// The engine's frontend-facing router.
 pub struct EngineRouter {
@@ -43,6 +43,9 @@ pub struct EngineRouter {
     >,
     /// Offline mode flag (sync-engine.md §6).
     offline: Arc<AtomicBool>,
+    /// Whether the shutdown epilogue waits (≤ 5 s) for the outbox final
+    /// flush; set by `Command::Shutdown { drain }`, defaults to drain.
+    drain_outbox: Arc<AtomicBool>,
 }
 
 impl EngineRouter {
@@ -67,6 +70,7 @@ impl EngineRouter {
             creds,
             sync_tasks: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             offline: Arc::new(AtomicBool::new(false)),
+            drain_outbox: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -83,6 +87,7 @@ impl EngineRouter {
         self,
         mut commands: mpsc::Receiver<kestrel_core::protocol::Command>,
         cancel: tokio_util::sync::CancellationToken,
+        engine_cancel: tokio_util::sync::CancellationToken,
         storage_cancel: tokio_util::sync::CancellationToken,
     ) {
         let accounts = self.storage.list_accounts().await.unwrap_or_default();
@@ -100,22 +105,52 @@ impl EngineRouter {
             }
         }
 
-        // Ordered shutdown: frontends detached (channel closing) → services
-        // cancel → outbox flush (Phase 2 attaches here) → storage
-        // checkpoint → done.
+        // Ordered shutdown: frontends detached (channel closing or cancel)
+        // → background services cancel → bounded outbox flush (≤ 5 s) →
+        // storage checkpoint → done (architecture §3.3).
         self.bus.publish(EngineEvent::EngineShutdownProgress {
             stage: ShutdownStage::DetachFrontends,
         });
+        // Cancel the supervised background services (config watcher, GC,
+        // snooze, filter, startup outbox/JMAP sync). Outbox instances run
+        // their final flush in the cancellation branch of `run`.
+        engine_cancel.cancel();
+        // Cancel in-session per-account sync/outbox services too.
+        let account_tokens: Vec<_> = {
+            let map = self.sync_tasks.lock().await;
+            map.values().cloned().collect()
+        };
+        for token in account_tokens {
+            token.cancel();
+        }
         self.bus.publish(EngineEvent::EngineShutdownProgress {
             stage: ShutdownStage::CancelServices,
         });
-        storage_cancel.cancel();
         self.bus.publish(EngineEvent::EngineShutdownProgress {
             stage: ShutdownStage::FlushOutbox,
         });
+        // Bounded final outbox flush: storage must stay open while the
+        // flushers drain, so poll until the queue is empty (≤ 5 s cap)
+        // before closing it. Skipped when the caller requested no drain.
+        if self.drain_outbox.load(Ordering::Relaxed) {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    break;
+                }
+                match self.storage.outbox_due().await {
+                    Ok(due) if due.is_empty() => break,
+                    Ok(_) | Err(_) => {
+                        // Still flushing (or storage busy); poll again.
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+            }
+        }
         self.bus.publish(EngineEvent::EngineShutdownProgress {
             stage: ShutdownStage::StorageCheckpoint,
         });
+        storage_cancel.cancel();
         // Storage closes when its task observes the cancellation; give the
         // loop a bounded moment to quiesce.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -483,12 +518,10 @@ impl EngineRouter {
                 self.bus.publish(EngineEvent::ConfigUpdated { snapshot });
             }
             P::Shutdown { drain } => {
-                let _ = drain; // outbox drain attaches with the Phase 2 flusher
-                // Router exits via its run loop cancellation; the engine
-                // cancels itself on shutdown commands.
-                self.bus.publish(EngineEvent::EngineShutdownProgress {
-                    stage: ShutdownStage::DetachFrontends,
-                });
+                // Whether the epilogue waits for the outbox final flush.
+                self.drain_outbox.store(drain, Ordering::Relaxed);
+                // The run loop exits on engine cancellation or channel
+                // close; the epilogue performs the ordered shutdown.
             }
         }
     }
@@ -562,14 +595,25 @@ impl EngineRouter {
 
         if config.provider == kestrel_core::protocol::Provider::Jmap {
             let jmap_host = config.imap_host.clone();
-            kestrel_sync::JmapSyncService::spawn(
+            let service = std::sync::Arc::new(kestrel_sync::JmapSyncService::new(
                 account_id,
                 jmap_host,
                 token,
                 store,
                 Arc::clone(&self.clock),
                 self.bus_forwarder(),
-                cancel,
+            ));
+            spawn_supervised(
+                ServiceId::Sync(account_id),
+                self.bus.clone(),
+                cancel.clone(),
+                move |attempt| {
+                    let service = Arc::clone(&service);
+                    async move {
+                        service.run(attempt).await;
+                        Ok(())
+                    }
+                },
             );
         } else {
             let security = Self::parse_security(&config.imap_security);
@@ -608,15 +652,26 @@ impl EngineRouter {
                     kestrel_crypto::sasl::start(mech, user, secret)
                 }),
             };
-            let service = kestrel_sync::SyncService::new(
+            let service = std::sync::Arc::new(kestrel_sync::SyncService::new(
                 account_id,
                 connect,
                 store.clone(),
                 Arc::clone(&*self.config.read().await),
                 Arc::clone(&self.clock),
                 self.bus_forwarder(),
+            ));
+            spawn_supervised(
+                ServiceId::Sync(account_id),
+                self.bus.clone(),
+                cancel.clone(),
+                move |attempt| {
+                    let service = Arc::clone(&service);
+                    async move {
+                        service.run(attempt).await;
+                        Ok(())
+                    }
+                },
             );
-            tokio::spawn(async move { service.run(cancel).await });
 
             // Spawn the outbox flush service for this account.
             let smtp_params = kestrel_sync::SmtpParams {
@@ -659,9 +714,21 @@ impl EngineRouter {
                 self.bus_forwarder(),
                 online,
             );
-            let outbox_cancel = tokio_util::sync::CancellationToken::new();
-            let outbox_span = tracing::info_span!("outbox", account = %account_id);
-            tokio::spawn(async move { outbox.run(outbox_cancel).await }.instrument(outbox_span));
+            let outbox = std::sync::Arc::new(outbox);
+            spawn_supervised(
+                ServiceId::Outbox,
+                self.bus.clone(),
+                cancel,
+                move |attempt| {
+                    let service = Arc::clone(&outbox);
+                    let span = tracing::info_span!("outbox", account = %account_id);
+                    async move {
+                        service.run(attempt).await;
+                        Ok(())
+                    }
+                    .instrument(span)
+                },
+            );
         }
 
         // Return the updated account list.
@@ -736,14 +803,25 @@ impl EngineRouter {
 
         if config.provider == kestrel_core::protocol::Provider::Jmap {
             let jmap_host = config.imap_host.clone();
-            kestrel_sync::JmapSyncService::spawn(
+            let service = std::sync::Arc::new(kestrel_sync::JmapSyncService::new(
                 account_id,
                 jmap_host,
                 token,
                 store,
                 Arc::clone(&self.clock),
                 self.bus_forwarder(),
-                cancel,
+            ));
+            spawn_supervised(
+                ServiceId::Sync(account_id),
+                self.bus.clone(),
+                cancel.clone(),
+                move |attempt| {
+                    let service = Arc::clone(&service);
+                    async move {
+                        service.run(attempt).await;
+                        Ok(())
+                    }
+                },
             );
         } else {
             let security = Self::parse_security(&config.imap_security);
@@ -782,15 +860,26 @@ impl EngineRouter {
                     kestrel_crypto::sasl::start(mech, user, secret)
                 }),
             };
-            let service = kestrel_sync::SyncService::new(
+            let service = std::sync::Arc::new(kestrel_sync::SyncService::new(
                 account_id,
                 connect,
                 store.clone(),
                 Arc::clone(&*self.config.read().await),
                 Arc::clone(&self.clock),
                 self.bus_forwarder(),
+            ));
+            spawn_supervised(
+                ServiceId::Sync(account_id),
+                self.bus.clone(),
+                cancel.clone(),
+                move |attempt| {
+                    let service = Arc::clone(&service);
+                    async move {
+                        service.run(attempt).await;
+                        Ok(())
+                    }
+                },
             );
-            tokio::spawn(async move { service.run(cancel).await });
 
             // Spawn the outbox flush service for this account.
             let smtp_params = kestrel_sync::SmtpParams {
@@ -833,9 +922,21 @@ impl EngineRouter {
                 self.bus_forwarder(),
                 online,
             );
-            let outbox_cancel = tokio_util::sync::CancellationToken::new();
-            let outbox_span = tracing::info_span!("outbox", account = %account_id);
-            tokio::spawn(async move { outbox.run(outbox_cancel).await }.instrument(outbox_span));
+            let outbox = std::sync::Arc::new(outbox);
+            spawn_supervised(
+                ServiceId::Outbox,
+                self.bus.clone(),
+                cancel,
+                move |attempt| {
+                    let service = Arc::clone(&outbox);
+                    let span = tracing::info_span!("outbox", account = %account_id);
+                    async move {
+                        service.run(attempt).await;
+                        Ok(())
+                    }
+                    .instrument(span)
+                },
+            );
         }
 
         // Return the updated account list.

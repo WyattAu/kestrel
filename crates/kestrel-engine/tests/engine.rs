@@ -334,6 +334,31 @@ async fn shutdown_is_ordered_and_completes() {
 }
 
 #[tokio::test]
+async fn engine_handle_shutdown_completes_and_emits_done() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = spawn_engine(dir.path()).await;
+    let mut events = handle.events();
+    let _ = events.recv().await; // EngineStarted
+
+    tokio::time::timeout(Duration::from_secs(5), handle.shutdown(true))
+        .await
+        .expect("handle.shutdown must complete within 5s");
+
+    // The ordered-shutdown Done stage is observable on the bus.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(EngineEvent::EngineShutdownProgress { stage }) = events.recv().await
+                && stage == ShutdownStage::Done
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("Done stage must be published");
+}
+
+#[tokio::test]
 async fn offline_mutations_are_enqueued() {
     let dir = tempfile::tempdir().unwrap();
     let handle = spawn_engine(dir.path()).await;

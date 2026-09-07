@@ -192,6 +192,36 @@ async fn futures_future_catch<F: Future>(
     futures::FutureExt::catch_unwind(fut).await
 }
 
+/// Spawns a supervised service task (ADR 0004): `factory` is invoked once
+/// per (re)start with a fresh attempt token; a panic or `Err` emits
+/// `ServiceDegraded` on the bus and restarts with exponential backoff.
+///
+/// `stop` is the engine-level cancellation token: when it fires, the
+/// current attempt's child token cancels and supervision ends. A clean
+/// `Ok(())` from the factory (i.e. the service stopping on cancellation)
+/// also ends supervision.
+//
+// The returned handle lets callers observe the end of supervision (tests,
+// teardown); production call sites intentionally detach the task.
+pub fn spawn_supervised<F, Fut>(
+    service: ServiceId,
+    bus: EventBus,
+    stop: tokio_util::sync::CancellationToken,
+    factory: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(CancellationToken) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<(), KestrelError>> + Send + 'static,
+{
+    tokio::spawn(Supervisor::supervise(
+        service,
+        SupervisionConfig::default(),
+        bus,
+        stop,
+        factory,
+    ))
+}
+
 fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -271,6 +301,45 @@ mod tests {
         assert!(
             counter.load(Ordering::SeqCst) >= 3,
             "restarted to third run"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_supervised_reports_service_id_and_restarts_after_panic() {
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+        let stop = CancellationToken::new();
+        let handle = spawn_supervised(
+            ServiceId::Snooze,
+            bus.clone(),
+            stop.clone(),
+            move |attempt| {
+                let c = c.clone();
+                async move {
+                    // First run panics; the supervisor must contain it and
+                    // restart.
+                    assert!(c.fetch_add(1, Ordering::SeqCst) != 0, "service exploded");
+                    // Second run: live until cancelled.
+                    attempt.cancelled().await;
+                    Ok(())
+                }
+            },
+        );
+        // First run panics -> ServiceDegraded with the right service id.
+        match events.recv().await {
+            Ok(EngineEvent::ServiceDegraded { service, error, .. }) => {
+                assert_eq!(service, ServiceId::Snooze);
+                assert_eq!(error.kind(), "engine.bug");
+            }
+            other => panic!("expected ServiceDegraded, got {other:?}"),
+        }
+        stop.cancel();
+        handle.await.unwrap();
+        assert!(
+            counter.load(Ordering::SeqCst) >= 2,
+            "service must have been restarted after the panic"
         );
     }
 

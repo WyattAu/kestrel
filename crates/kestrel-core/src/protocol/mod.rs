@@ -532,6 +532,10 @@ pub enum ServiceId {
     Sync(AccountId),
     /// Filter rule evaluation service.
     Filter,
+    /// Engine-internal snooze-expiry poller.
+    Snooze,
+    /// Blob GC / maintenance scheduler.
+    Maintenance,
 }
 
 impl std::fmt::Display for ServiceId {
@@ -545,6 +549,8 @@ impl std::fmt::Display for ServiceId {
             Self::Config => write!(f, "config"),
             Self::Sync(a) => write!(f, "sync/{a}"),
             Self::Filter => write!(f, "filter"),
+            Self::Snooze => write!(f, "snooze"),
+            Self::Maintenance => write!(f, "maintenance"),
         }
     }
 }
@@ -1130,6 +1136,75 @@ mod tests {
     #[test]
     fn protocol_version_is_two() {
         assert_eq!(PROTOCOL_VERSION, 2);
+    }
+
+    #[test]
+    fn protocol_surface_matches_documentation() {
+        // Compile-time surface guards: the exhaustive matches below break
+        // the build when a variant is added, forcing a deliberate update of
+        // PROTOCOL_VERSION and `docs/message-protocol.md` in the same PR
+        // (protocol doc §7: additive variants are minor bumps; anything
+        // else requires an ADR). The assertions pin the current surface so
+        // drift is a compile error, not a doc footnote.
+
+        fn frontend_display(kind: FrontendKind) -> &'static str {
+            match kind {
+                FrontendKind::Tui => "tui",
+                FrontendKind::Gui => "gui",
+                FrontendKind::Mobile => "mobile", // ADR 0013
+            }
+        }
+
+        fn service_display(service: ServiceId) -> String {
+            match service {
+                ServiceId::Storage => "storage".into(),
+                ServiceId::Index => "index".into(),
+                ServiceId::Search => "search".into(),
+                ServiceId::Outbox => "outbox".into(),
+                ServiceId::Credentials => "credentials".into(),
+                ServiceId::Config => "config".into(),
+                ServiceId::Sync(_) => "sync".into(),
+                ServiceId::Filter => "filter".into(),
+                ServiceId::Snooze => "snooze".into(),
+                ServiceId::Maintenance => "maintenance".into(),
+            }
+        }
+
+        assert_eq!(frontend_display(FrontendKind::Tui), "tui");
+        assert_eq!(frontend_display(FrontendKind::Gui), "gui");
+        assert_eq!(frontend_display(FrontendKind::Mobile), "mobile");
+
+        let registry = [
+            ServiceId::Storage,
+            ServiceId::Index,
+            ServiceId::Search,
+            ServiceId::Outbox,
+            ServiceId::Credentials,
+            ServiceId::Config,
+            ServiceId::Sync(crate::ids::AccountId::from_uuid(uuid::Uuid::now_v7())),
+            ServiceId::Filter,
+            ServiceId::Snooze,
+            ServiceId::Maintenance,
+        ];
+        // §3.1 registry, mirroring docs/message-protocol.md.
+        for expected in [
+            "storage",
+            "index",
+            "search",
+            "outbox",
+            "credentials",
+            "config",
+            "sync",
+            "filter",
+            "snooze",
+            "maintenance",
+        ] {
+            assert!(
+                registry.iter().any(|s| service_display(*s) == expected),
+                "ServiceId registry is missing {expected}"
+            );
+        }
+        assert_eq!(registry.len(), 10);
     }
 
     #[test]
