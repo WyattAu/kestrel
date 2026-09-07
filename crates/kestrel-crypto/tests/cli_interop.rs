@@ -194,6 +194,10 @@ fn gpg_signs_encrypts_kestrel_decrypts_and_reports_signer() {
             "--trust-model",
             "always",
             "--armor",
+            // --rfc4880: pin the classic packet format. Newer gpg defaults
+            // (2.4.4 on CI) may emit AEAD packets Sequoia's policy rejects;
+            // RFC 4880 output is what both versions and Sequoia accept.
+            "--rfc4880",
             "--sign",
             "--local-user",
             "signer@example.org",
