@@ -75,9 +75,9 @@ for _ in $(seq 1 "$SAMPLES"); do
     # TUI needs a pty; wrap in `script` so it stays alive.
     script -qec "timeout 20 $BIN" /dev/null >/dev/null 2>&1 &
   else
-    # --headless: kestrel-gui's headless mode (same as webview-netns-test.sh);
-    # without it the GUI exits on a display-less runner.
-    timeout 20 "${RUNNER[@]}" "$BIN" --headless >"$CRASH_LOG" 2>&1 &
+    # Headless runners have no GPU: the Slint/femtovg shell needs software
+    # GL (mesa llvmpipe), so force it. `--headless` is accepted and ignored.
+    timeout 20 "${RUNNER[@]}" env LIBGL_ALWAYS_SOFTWARE=1 "$BIN" >"$CRASH_LOG" 2>&1 &
   fi
   WRAPPER=$!
 

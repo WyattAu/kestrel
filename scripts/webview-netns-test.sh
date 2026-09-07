@@ -45,13 +45,26 @@ if [ ! -x "$BIN" ]; then
 fi
 
 # Launch under xvfb inside the isolated namespace; give it a few seconds to
-# construct the Slint shell + viewport, then require a clean exit on SIGTERM.
-timeout 20 xvfb-run -a unshare -n "$BIN" --headless &
+# construct the Slint shell + viewport, then require the *app* (not just the
+# timeout wrapper) to still be alive before SIGTERM.
+APP_COMM=kestrel-gui
+app_alive() { # 1 = a kestrel-gui process exists
+  for pid in /proc/[0-9]*; do
+    if [ -r "$pid/comm" ] && [ "$(cat "$pid/comm" 2>/dev/null)" = "$APP_COMM" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Headless runners have no GPU: the Slint/femtovg shell needs software GL.
+timeout 20 xvfb-run -a unshare -n env LIBGL_ALWAYS_SOFTWARE=1 "$BIN" >/tmp/kestrel-gui-netns.log 2>&1 &
 PID=$!
 sleep 8
-if ! kill -0 "$PID" 2>/dev/null; then
+if ! app_alive; then
   wait "$PID" || true
-  echo "fail: kestrel-gui exited early under the sandbox"
+  echo "fail: kestrel-gui is not alive inside the sandbox" >&2
+  tail -15 /tmp/kestrel-gui-netns.log >&2 || true
   exit 1
 fi
 kill -TERM "$PID" 2>/dev/null || true
