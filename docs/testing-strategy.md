@@ -50,7 +50,7 @@ Rules:
 
 | Property | Module | Strategy sketch |
 |----------|--------|-----------------|
-| Threading is idempotent | `kestrel-core::threading` | generate random reply graphs (message-ids, in-reply-to chains, subjects, dates); `thread(gen) == thread(thread(gen) applied)`; root count ≤ message count; acyclic |
+| Threading is idempotent | `mailkit::threading` (re-exported by `kestrel-core::threading` since the extraction; property suite lives upstream in `mailkit`) | generate random reply graphs (message-ids, in-reply-to chains, subjects, dates); `thread(gen) == thread(thread(gen) applied)`; root count ≤ message count; acyclic |
 | Sanitizer removes all C0/C1 + OSC | `kestrel-core::sanitizer` | arbitrary `Vec<u8>` → sanitized output contains no ESC (0x1b), no other C0 except `\t\n\r` |
 | Parser limits hold | `kestrel-core::mime` | random nesting depth > 64 ⇒ `ParseError::Limit`; decoded size cap enforced |
 | Link classifier | `kestrel-core::links` | generated homograph/punycode/display-mismatch tables must classify exactly as the fixture table |

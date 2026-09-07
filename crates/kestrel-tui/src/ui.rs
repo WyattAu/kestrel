@@ -65,7 +65,8 @@ fn focus_style(focused: bool) -> Style {
 
 fn draw_folder_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
     let focused = state.focus == Focus::Folders;
-    let mut items: Vec<ListItem<'_>> = Vec::with_capacity(state.accounts.len() + state.folders.len());
+    let mut items: Vec<ListItem<'_>> =
+        Vec::with_capacity(state.accounts.len() + state.folders.len());
 
     for (i, acc) in state.accounts.iter().enumerate() {
         let color = acc
@@ -207,7 +208,8 @@ fn draw_preview_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
         .border_style(focus_style(focused));
 
     if let Some(view) = &state.preview {
-        let mut lines: Vec<Line<'_>> = Vec::with_capacity(8 + view.body_plain.as_ref().map_or(0, |b| b.lines().count()));
+        let mut lines: Vec<Line<'_>> =
+            Vec::with_capacity(8 + view.body_plain.as_ref().map_or(0, |b| b.lines().count()));
         // Header.
         lines.push(Line::from(Span::styled(
             format!(
