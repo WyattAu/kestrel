@@ -130,9 +130,10 @@ After triaging a crash:
   `#[ignore]`d and prefixed `integration_` so the default profile never needs
   Docker (`--profile integration` runs them with retries; see
   `.config/nextest.toml`).
-- The GUI webview network-isolation test runs its assertions with
-  `unshare -n` when available and skips (with a loud log) where namespaces
-  are unavailable; CI always has them (threat model §7).
+- The GUI webview network-isolation test (`scripts/webview-netns-test.sh`,
+  CI job `webview-isolation`; threat model §7 row T3) proves the `unshare -n`
+  namespace actually removes the network before booting `kestrel-gui` headless
+  inside it; it skips (loudly) where namespaces/xvfb are unavailable.
 
 ## 6. SLA benchmarks (engineering-standards §5 mapping)
 

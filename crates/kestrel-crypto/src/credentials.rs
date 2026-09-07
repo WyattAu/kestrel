@@ -439,4 +439,109 @@ mod tests {
             Err(other) => panic!("unexpected error: {other}"),
         }
     }
+
+    #[test]
+    fn plaintext_fallback_is_refused_by_construction() {
+        // threat-model M26/T5: the only backend is the OS keyring
+        // (`resolve_credential_store` returns `KeyringStore`); there is no
+        // file or plaintext store to degrade to, so a missing Secret
+        // Service must fail typed rather than write the secret anywhere.
+        let store = resolve_credential_store().unwrap();
+        let a = acct();
+        let secret = SecretString::new("s3ns1t1ve-pw-79821".into());
+        match store.save(a, "password", &secret) {
+            Ok(()) => {
+                // Keyring available: a round-trip must not leave a residual
+                // entry after deletion.
+                assert!(store.load(a, "password").unwrap().is_some());
+                store.delete(a, "password").unwrap();
+                assert!(store.load(a, "password").unwrap().is_none());
+            }
+            Err(CryptoError::KeyringUnavailable(_)) => {}
+            Err(other) => panic!("expected typed KeyringUnavailable, got {other}"),
+        }
+    }
+
+    /// Collects formatted tracing records so log-scrubbing (ADR 0008,
+    /// threat-model M6/T6) can be asserted against real output.
+    struct Capture {
+        records: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Capture {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                records: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    struct FieldWriter(String);
+
+    impl tracing::field::Visit for FieldWriter {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            let _ = std::fmt::Write::write_fmt(
+                &mut self.0,
+                format_args!("{}={:?} ", field.name(), value),
+            );
+        }
+    }
+
+    impl tracing::Subscriber for Capture {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::Id {
+            tracing::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::Id, _: &tracing::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut writer = FieldWriter(String::new());
+            event.record(&mut writer);
+            self.records.lock().unwrap().push(writer.0);
+        }
+        fn enter(&self, _: &tracing::Id) {}
+        fn exit(&self, _: &tracing::Id) {}
+    }
+
+    #[test]
+    fn secret_never_enters_tracing_output() {
+        // ADR 0008 scrub rule (threat-model M6/T6): no credential material
+        // may appear in any tracing record — including error paths.
+        let capture = Capture::new();
+        let secret = "K3str3l-acc0unt-s3cr3t-918273";
+        let address = "jane.doe@example.com";
+        let svc = CredentialService::new(Arc::new(InMemoryStore::new()));
+        let a = acct();
+
+        let subscriber = std::sync::Arc::clone(&capture);
+        tracing::subscriber::with_default(subscriber, || {
+            let pw = SecretString::new(secret.to_owned());
+            let _ = svc.set_password(a, &pw);
+            let _ = svc.password(a);
+            let _ = svc.store_refresh_token(a, secret);
+            let _ = svc.get_refresh_token(a);
+            let _ = svc.purge(a);
+            // Exercise the realistic failure path: an unavailable keyring
+            // must surface a typed error whose rendering never embeds the
+            // secret.
+            let res = KeyringStore.save(a, "password", &pw);
+            if let Err(e) = res {
+                tracing::error!(error = %e, address = %address, "credential backend failure");
+            }
+        });
+
+        let records = capture.records.lock().unwrap();
+        assert!(
+            !records.iter().any(|r| r.contains(secret)),
+            "secret leaked into tracing records: {records:?}"
+        );
+        assert!(
+            !records.iter().any(|r| r.contains(address)),
+            "PII address leaked into tracing records: {records:?}"
+        );
+    }
 }

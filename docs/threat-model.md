@@ -110,9 +110,10 @@ mail server, (c) email sender (primary — anyone can send mail),
   channels everywhere (message-protocol §4) make queue flooding impossible.
 
 ### 4.8 Credentials (M5–M6, M25–M26)
-- OS keyring mandatory where available (`keyring` crate); GPG-encrypted file
-  fallback with 0600 perms; **plaintext fallback is refused**, not warned
-  about.
+- OS keyring mandatory (`keyring` crate; `resolve_credential_store` returns
+  only a keyring-backed store). When the Secret Service is unavailable,
+  operations fail with the typed `KeyringUnavailable` error — there is **no
+  file or plaintext fallback at all** (refused by construction; T5).
 - Tokens/passwords: never in SQLite, never in config files, never in logs
   (ADR 0008 scrub rules; log assertions tested).
 - OAuth loopback server binds `127.0.0.1` only, ephemeral port, single-use
@@ -138,12 +139,21 @@ mail server, (c) email sender (primary — anyone can send mail),
 
 ## 7. Security Test Matrix (maps to engineering-standards CI)
 
-| Mitigation set | Verification |
-|----------------|--------------|
-| Parser limits (4.2) | cargo-fuzz corpora + regression corpus in `tests/mime-corpus/` |
-| CSP & webview (4.4) | GUI integration test asserting CSP header on every load; attempted `file://`/script loads fail closed |
-| Remote content (4.4) | Integration test: no network syscalls from viewport process during render (network namespace sandbox in CI) |
-| Link defenses (4.5) | Unit table: punycode/confusable/href-mismatch cases must trigger confirmation |
-| Credential storage (4.8) | Unit tests: no plaintext bytes on disk (scan test); keyring fallback matrix |
-| Log scrubbing (4.8) | Log-capture tests asserting token/address absence |
-| TUI escapes (4.6) | Sanitizer property tests + corpus of hostile sequences |
+Each row is **enforced by name**: `scripts/check-threat-matrix.sh` (CI `test`
+job) asserts the listed test module/function appears in `cargo nextest list`
+and the listed harness files/jobs exist. Deleting or renaming a mitigation's
+coverage without updating this row fails CI — coverage can never silently
+vanish.
+
+| ID | Mitigation set | Named coverage (enforced) |
+|----|----------------|---------------------------|
+| T1 | Parser limits (4.2) | fuzz targets `fuzz/fuzz_targets/*.rs` + regression corpus `tests/mime-corpus/`; module `kestrel_core::mime::tests` |
+| T2 | CSP & webview (4.4) | `kestrel_gui::gui_csp_blocks_all_active_content` (integration) and `kestrel_core::sanitizer::tests` + gui `sanitized_html_has_no_active_content` |
+| T3 | Remote content (4.4) | `scripts/webview-netns-test.sh` + CI job `webview-isolation` (network namespace around the viewport render; issue #6) |
+| T4 | Link defenses (4.5) | module `kestrel_core::links::tests` (punycode/homograph/mismatch cases) |
+| T5 | Credential storage (4.8) | `kestrel_crypto::credentials::tests::keyring_store_reports_unavailable_without_dbus`, `..._secrets_are_masked_in_debug`, `..._plaintext_fallback_is_refused_by_construction` |
+| T6 | Log scrubbing (4.8) | `kestrel_crypto::credentials::tests::secret_never_enters_tracing_output` |
+| T7 | TUI escapes (4.6) | module `kestrel_core::sanitizer::tests` + `kestrel_tui::html::tests::terminal_escapes_neutralized` |
+
+Fuzz rows additionally run weekly (`fuzz-weekly.yml`) and every push in the
+`fuzz` CI job.

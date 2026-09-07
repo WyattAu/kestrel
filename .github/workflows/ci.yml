@@ -43,6 +43,34 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace
+      - name: Enforce threat-model §7 test matrix
+        run: bash scripts/check-threat-matrix.sh
+
+  webview-isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config xvfb
+      - name: Network-isolation test for the viewport (threat-model T3)
+        run: bash scripts/webview-netns-test.sh
+
+  startup-harness:
+    runs-on: ubuntu-latest
+    # Real-binary cold-start + idle-RSS measurement (backlog #3). Runs after
+    # merge and on demand; builds both frontends in release.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config xvfb
+      - run: cargo build -p kestrel-tui -p kestrel-gui --release
+      - name: Measure GUI cold start + idle RSS
+        run: bash scripts/measure-process-startup.sh target/release/kestrel-gui --xvfb
+      - name: Measure TUI cold start + idle RSS
+        run: bash scripts/measure-process-startup.sh target/release/kestrel-tui
 
   integration:
     runs-on: ubuntu-latest

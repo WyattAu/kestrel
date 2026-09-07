@@ -39,9 +39,13 @@ Closed this cycle (Wave 0 + CI verification):
   runner pinning via the `BENCH_RUNNER` repository variable (issue #8).
 
 Remaining gaps:
-- **Phase 4 security matrix:** sanitizer/link structural tests are in place;
-  the webview *network-isolation* runtime test (`unshare -n`) described in
-  `docs/testing-strategy.md` §5 is not yet implemented (issue #6).
+- **Phase 4 security matrix:** every §7 row (T1–T7) now has named,
+  CI-enforced coverage — including the `unshare -n` webview
+  network-isolation runtime test (issue #6, `scripts/webview-netns-test.sh`)
+  and a real-binary cold-start/RSS harness (issue #3,
+  `scripts/measure-process-startup.sh`, post-merge job). The coverage-gate
+  decision (issue #10) and the §7 matrix rows are enforced by
+  `scripts/check-threat-matrix.sh` in the `test` job.
 
 Issue numbers refer to the GitHub backlog (phase/epic labels). The
 `protocol_surface_matches_documentation` test in `kestrel-core` guards
