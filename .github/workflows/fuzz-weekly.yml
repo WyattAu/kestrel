@@ -12,14 +12,15 @@ jobs:
   fuzz-deep:
     runs-on: ubuntu-latest
     # cargo-fuzz needs nightly (-Z flags); RUSTUP_TOOLCHAIN overrides the
-    # stable channel pinned in rust-toolchain.toml.
+    # stable channel pinned in rust-toolchain.toml. RUSTFLAGS adds the
+    # documented fix for cargo-fuzz's default musl target ("sanitizer is
+    # incompatible with statically linked libc").
     env:
       RUSTUP_TOOLCHAIN: nightly
+      RUSTFLAGS: "-C target-feature=-crt-static"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz -> target

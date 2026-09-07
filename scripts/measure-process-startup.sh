@@ -59,6 +59,9 @@ find_app_pid() {
   return 1
 }
 
+CRASH_LOG="$(mktemp)"
+trap 'rm -f "$CRASH_LOG"' EXIT
+
 SAMPLES=5
 STARTUP=()
 RSS_KB=()
@@ -71,7 +74,9 @@ for _ in $(seq 1 "$SAMPLES"); do
     # TUI needs a pty; wrap in `script` so it stays alive.
     script -qec "timeout 20 $BIN" /dev/null >/dev/null 2>&1 &
   else
-    timeout 20 "${RUNNER[@]}" "$BIN" >/dev/null 2>&1 &
+    # --headless: kestrel-gui's headless mode (same as webview-netns-test.sh);
+    # without it the GUI exits on a display-less runner.
+    timeout 20 "${RUNNER[@]}" "$BIN" --headless >"$CRASH_LOG" 2>&1 &
   fi
   WRAPPER=$!
 
@@ -89,6 +94,8 @@ for _ in $(seq 1 "$SAMPLES"); do
   sleep 1.5
   if [ ! -d "/proc/$APP_PID" ]; then
     echo "FAIL: $APP exited during the settle window (startup crash)" >&2
+    echo "--- last app output ---" >&2
+    tail -15 "$CRASH_LOG" >&2 || true
     kill -TERM "$WRAPPER" 2>/dev/null || true
     exit 1
   fi

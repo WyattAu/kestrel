@@ -102,7 +102,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev sqlite3 pkg-config
+      # sqlx prepare compiles workspace members (gui pulls webkit/gtk/dbus).
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev sqlite3 pkg-config
       - uses: taiki-e/install-action@v2
         with:
           # cargo-sqlx does not exist as an install-action/binstall crate;
@@ -394,20 +395,29 @@ jobs:
       # target on the toolchain cargo will actually use.
       - run: rustup target add ${{ matrix.target }}
       - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libsqlite3-dev pkg-config
+      # ring's build script needs the NDK clang for the target triple
+      # ("aarch64-linux-android-clang"), which only ships in the NDK.
+      - uses: android-actions/setup-android@v3
+      - name: Install Android NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install "ndk;26.3.11579264" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.3.11579264" >> "$GITHUB_ENV"
       - run: cargo check --package kestrel-mobile --target ${{ matrix.target }}
 
   fuzz:
     runs-on: ubuntu-latest
     # cargo-fuzz drives rustc with -Z flags (libFuzzer + ASan): nightly is
     # mandatory. RUSTUP_TOOLCHAIN forces nightly over rust-toolchain.toml's
-    # pinned stable channel.
+    # pinned stable channel. RUSTFLAGS replaces the repo-wide -D warnings and
+    # adds the documented fix for cargo-fuzz's default musl target
+    # ("sanitizer is incompatible with statically linked libc").
     env:
       RUSTUP_TOOLCHAIN: nightly
+      RUSTFLAGS: "-C target-feature=-crt-static"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz -> target

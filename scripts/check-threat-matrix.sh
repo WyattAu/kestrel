@@ -13,16 +13,30 @@ cd "$ROOT"
 
 # --- gather the test list once -------------------------------------------------
 LIST="$(mktemp)"
-trap 'rm -f "$LIST"' EXIT
+LIST_ERR="$(mktemp)"
+trap 'rm -f "$LIST" "$LIST_ERR"' EXIT
 echo "Collecting test list (cargo nextest list --workspace)..." >&2
-cargo nextest list --workspace >"$LIST" 2>/dev/null
+if ! cargo nextest list --workspace >"$LIST" 2>"$LIST_ERR"; then
+  echo "::error::cargo nextest list failed:" >&2
+  cat "$LIST_ERR" >&2
+  exit 1
+fi
 
 FAIL=0
 check_test() { # label, required-substring
   if grep -qF -- "$2" "$LIST"; then
     echo "ok   $1 -> $2"
+  elif cargo nextest list --workspace -E "test($2)" >/dev/null 2>"$LIST_ERR"; then
+    # The shared list can be truncated if a test binary chokes in list mode
+    # (seen on CI for kestrel-crypto/kestrel-tui); a targeted filter query is
+    # ground truth that the named coverage exists.
+    echo "ok   $1 -> $2 (targeted query; shared list was incomplete)"
   else
     echo "FAIL $1: no test matches \"$2\""
+    if [ -s "$LIST_ERR" ]; then
+      echo "--- nextest list stderr ---" >&2
+      head -5 "$LIST_ERR" >&2
+    fi
     FAIL=1
   fi
 }
