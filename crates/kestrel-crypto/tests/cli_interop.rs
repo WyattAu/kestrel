@@ -216,15 +216,28 @@ fn gpg_signs_encrypts_kestrel_decrypts_and_reports_signer() {
         "gpg: {}",
         String::from_utf8_lossy(&ver.stdout).lines().next().unwrap()
     );
-    let dump = run(
-        "gpg",
-        &[
+    // TEMP diagnostic: dump packet layout (tolerates gpg's non-zero exit,
+    // which tries to auto-decrypt during listing).
+    let dump = Command::new("gpg")
+        .args([
+            "--homedir",
+            home.to_str().unwrap(),
             "--list-packets",
             dir.path().join("signed-enc.asc").to_str().unwrap(),
-        ],
-        &home,
-    );
+        ])
+        .output()
+        .unwrap();
     eprintln!("packets:\n{}", String::from_utf8_lossy(&dump.stdout));
+    eprintln!(
+        "keys:\n{}",
+        String::from_utf8_lossy(
+            &Command::new("gpg")
+                .args(["--homedir", home.to_str().unwrap(), "-K", "--with-colons"])
+                .output()
+                .unwrap()
+                .stdout
+        )
+    );
     let (plaintext, signed_by) = openpgp::decrypt(
         &recipient,
         &empty_pw(),
