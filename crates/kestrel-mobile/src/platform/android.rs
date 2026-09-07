@@ -10,7 +10,9 @@ use crate::push::PushNotification;
 
 /// Android-specific push notification configuration.
 pub struct AndroidPushConfig {
+    /// Firebase Cloud Messaging registration token for this device.
     pub fcm_token: String,
+    /// Firebase project id the token was issued for.
     pub project_id: String,
 }
 
