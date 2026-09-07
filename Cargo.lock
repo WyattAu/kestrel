@@ -4385,7 +4385,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
  "tokio",
  "tracing",
  "uuid",
@@ -4408,7 +4407,6 @@ dependencies = [
  "pulldown-cmark",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4424,11 +4422,9 @@ dependencies = [
 name = "kestrel-crypto"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "criterion",
  "hmac 0.12.1",
- "http",
  "kestrel-core",
  "keyring",
  "oauth-toolkit",
@@ -4445,11 +4441,9 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "tokio-util",
  "tracing",
  "uuid",
  "webpki-roots 0.26.11",
- "zeroize",
 ]
 
 [[package]]
@@ -4466,7 +4460,6 @@ dependencies = [
  "kestrel-sync",
  "serde_json",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -4481,7 +4474,6 @@ dependencies = [
  "kestrel-core",
  "regex",
  "serde",
- "thiserror 2.0.20",
  "tokio",
  "tracing",
  "uuid",
@@ -4503,9 +4495,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
- "tokio-util",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
@@ -4550,7 +4540,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "criterion",
- "hex",
  "kestrel-core",
  "libc",
  "proptest",
@@ -4571,7 +4560,6 @@ dependencies = [
 name = "kestrel-sync"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "chrono",
  "imap-next",
@@ -4593,7 +4581,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -4605,17 +4592,12 @@ dependencies = [
  "futures",
  "kestrel-core",
  "kestrel-engine",
- "mime_guess",
- "pulldown-cmark",
  "ratatui",
  "serde",
  "serde_json",
  "shell-words",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
- "tokio-util",
- "tracing",
  "tracing-subscriber",
  "uuid",
 ]

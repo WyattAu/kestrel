@@ -13,14 +13,11 @@ workspace = true
 [dependencies]
 kestrel-core = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 keyring = { workspace = true }
-zeroize = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 webpki-roots = { workspace = true }
@@ -39,7 +36,6 @@ openssl = "0.10"
 sequoia-openpgp = { version = "2.4", default-features = false, features = ["crypto-openssl", "compression-deflate"] }
 # OAuth2 token endpoint + JMAP HTTP transport
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-http = "1"
 # OAuth2 flows (PKCE/loopback/token/provider presets) — extracted crate.
 oauth-toolkit = { workspace = true }
 

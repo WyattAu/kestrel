@@ -92,10 +92,14 @@ The SLA table from `requirements.md` §8 is executable:
 
 Rules: hot paths (`messages` ingestion, list windowing, Tantivy commits) may
 not regress a benchmark > 10% without an ADR-accepted justification.
-Baselines live in `benches/baselines/` (JSON) and are compared in CI; a
-> 10 % regression gate is enforced on the hot paths above. Benchmarks run
-pinned (fixed CPU governor, `--disable-default-features` noise control) in a
-dedicated CI job; results posted to the PR.
+Baselines live in `benches/baselines/` (JSON); the CI `benches` job compares
+every tracked run against them and fails on a > 10% regression (latency up /
+ingest throughput down) in addition to the absolute SLA thresholds above.
+The job runs on a dedicated runner — pin hardware by setting the
+`BENCH_RUNNER` repository variable to a self-hosted label; the default is
+GitHub-hosted `ubuntu-latest`, so expect run-to-run noise when unpinned.
+`cargo machete` (unused deps) and a relative-markdown-link check
+(`scripts/check-doc-links.sh`) run as separate CI jobs.
 
 ## 6. Supply Chain & Licensing
 

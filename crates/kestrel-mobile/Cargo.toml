@@ -23,3 +23,17 @@ slint = { version = "1.17", default-features = false, features = ["std", "compat
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+
+# cargo-machete: kestrel-mobile compiles for android/ios targets; every dep
+# below is used under `#[cfg(target_os = ...)]` / the FFI boundary, which the
+# host-side static scan cannot see (ADR 0013).
+[package.metadata.cargo-machete]
+ignored = [
+  "kestrel-core",
+  "kestrel-engine",
+  "slint",
+  "thiserror",
+  "tokio",
+  "tokio-util",
+  "tracing",
+]

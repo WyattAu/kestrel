@@ -27,17 +27,21 @@ task lists here.
 
 ## Known gaps (docs vs. shipped code)
 
-- **Sync trigger:** per-account IMAP/JMAP services run autonomously;
-  `Command::TriggerSync` is a documented no-op until wiring lands (issue #1).
-  Startup IMAP sync *resume* for stored accounts and the ordered
-  `EngineHandle::shutdown` path (bounded outbox flush, storage checkpoint)
-  are implemented.
+Closed this cycle (Wave 0 + CI verification):
+- Per-account services are supervised with restart-on-panic
+  (`ServiceDegraded`), `Command::TriggerSync` is wired end-to-end
+  (per-account `Notify` in the sync services), `RemoveAccount`/shutdown stop
+  startup-resumed accounts too, and the three per-account spawn sites are
+  unified behind `accounts.rs` (issues #1, #2).
+- CI now runs `cargo machete` (unused deps, issue #9) and a
+  relative-markdown-link check (`scripts/check-doc-links.sh`, issue #11), and
+  the `benches` job enforces the > 10 % baseline regression gate with
+  runner pinning via the `BENCH_RUNNER` repository variable (issue #8).
+
+Remaining gaps:
 - **Phase 4 security matrix:** sanitizer/link structural tests are in place;
   the webview *network-isolation* runtime test (`unshare -n`) described in
   `docs/testing-strategy.md` §5 is not yet implemented (issue #6).
-- **SLA gates:** the CI bench job enforces absolute SLA thresholds; the
-  baseline-comparison (> 10 % regression) gate and pinned-runner settings from
-  `docs/engineering-standards.md` §5 are not yet wired into CI (issue #8).
 
 Issue numbers refer to the GitHub backlog (phase/epic labels). The
 `protocol_surface_matches_documentation` test in `kestrel-core` guards

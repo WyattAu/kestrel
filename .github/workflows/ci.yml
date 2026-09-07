@@ -102,8 +102,28 @@ jobs:
       - run: cargo audit
       - run: cargo deny check
 
-  benches:
+  deps:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete
+      - name: Check for unused dependencies
+        run: cargo machete
+
+  docs-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify relative markdown links resolve
+        run: bash scripts/check-doc-links.sh
+
+  benches:
+    # Pin hardware by setting the BENCH_RUNNER repository variable to a
+    # self-hosted label (engineering-standards §5); default to GH-hosted.
+    runs-on: ${{ vars.BENCH_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -212,6 +232,76 @@ jobs:
 
           if [ "$FAIL" -eq 1 ]; then echo "::error::SLA enforcement failed."; exit 1; fi
           echo "All SLA thresholds passed."
+      - name: Enforce baseline regression gate (no >10% regression)
+        run: |
+          parse_mean_ms() {
+            local pattern="$1"
+            local line mean_raw unit
+            line=$(grep -P "$pattern\\s+time:" bench-output.txt || true)
+            if [ -z "$line" ]; then echo ""; return; fi
+            mean_raw=$(echo "$line" | grep -oP 'time:\\s+\\[\\K[0-9.]+')
+            unit=$(echo "$line" | grep -oP 'time:\\s+\\[[0-9.]+\\s+\\K\\S+')
+            case "$unit" in
+              ns) echo "scale=4; $mean_raw / 1000000" | bc ;;
+              us) echo "scale=4; $mean_raw / 1000" | bc ;;
+              ms) echo "$mean_raw" ;;
+              s)  echo "scale=4; $mean_raw * 1000" | bc ;;
+              *)  echo ""; return ;;
+            esac
+          }
+
+          # Latency benchmarks (higher = worse): fail if measured > 1.10 x
+          # the committed baseline in benches/baselines/.
+          check_latency() {
+            local name="$1" pattern="$2" file="$3"
+            local ms base limit
+            ms=$(parse_mean_ms "$pattern")
+            if [ -z "$ms" ]; then
+              echo "::warning::Baseline gate: could not measure $name."
+              return
+            fi
+            base=$(grep -oP '"mean_ms":\\s*\\K[0-9.]+' "$file" || true)
+            if [ -z "$base" ]; then
+              echo "::warning::Baseline gate: no baseline recorded for $name."
+              return
+            fi
+            limit=$(echo "scale=4; $base * 1.10" | bc)
+            if [ "$(echo "$ms > $limit" | bc)" -eq 1 ]; then
+              echo "::error::Baseline regression: $name ${ms} ms > 1.10 x baseline ${base} ms"
+              FAIL=1
+            else
+              echo "Baseline ok: $name ${ms} ms (baseline ${base} ms, limit ${limit} ms)"
+            fi
+          }
+
+          FAIL=0
+          check_latency "search_100k" "search_100k/text_query_first_50" benches/baselines/search_100k.json
+          check_latency "search_500k" "search_500k/text_query_first_50" benches/baselines/search_500k.json
+          check_latency "tui_cold_start" "tui_cold_start/config_paths_app_state" benches/baselines/tui_cold_start.json
+          check_latency "gui_cold_start" "gui_cold_start/config_paths_viewport_state" benches/baselines/gui_cold_start.json
+          check_latency "engine_cold_start" "engine_cold_start/0_accounts" benches/baselines/engine_cold_start.json
+
+          # Ingest throughput (higher = better): fail if measured < 0.90 x
+          # the baseline msgs/sec.
+          MEAN_SEC=$(grep -oP 'ingest/envelopes_100/batch\\s+time:\\s+\\[\\K[0-9.]+' bench-output.txt | head -1)
+          if [ -n "$MEAN_SEC" ]; then
+            MSGS_PER_SEC=$(echo "scale=2; 100 / $MEAN_SEC" | bc)
+            BASE=$(grep -oP '"mean_msgs_per_sec":\\s*\\K[0-9.]+' benches/baselines/ingest.json || true)
+            if [ -n "$BASE" ]; then
+              LIMIT=$(echo "scale=2; $BASE * 0.90" | bc)
+              if [ "$(echo "$MSGS_PER_SEC < $LIMIT" | bc)" -eq 1 ]; then
+                echo "::error::Baseline regression: ingest ${MSGS_PER_SEC} msgs/sec < 0.90 x baseline ${BASE} msgs/sec"
+                FAIL=1
+              else
+                echo "Baseline ok: ingest ${MSGS_PER_SEC} msgs/sec (baseline ${BASE} msgs/sec, limit ${LIMIT})"
+              fi
+            fi
+          else
+            echo "::warning::Baseline gate: could not measure ingest."
+          fi
+
+          if [ "$FAIL" -eq 1 ]; then echo "::error::Baseline regression gate failed."; exit 1; fi
+          echo "All benchmarks within 10% of their baselines."
       - name: Check idle memory SLA
         run: |
           RSS_OUTPUT=$(cargo test -p kestrel-engine --test idle_memory_check -- --nocapture 2>&1 || true)

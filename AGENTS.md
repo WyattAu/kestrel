@@ -69,12 +69,15 @@ Integration tests (Docker needed): `cargo nextest run --profile integration`.
 
 Documentation and CI infrastructure phase complete. Core storage & parsing
 are implemented and CI-green; the sync engine, TUI, GUI, and crypto code sit
-**ahead of** the roadmap milestones. `docs/roadmap.md` has a “Known gaps”
-section documenting what is wired vs. outstanding (`TriggerSync` wiring, the
-`unshare` webview isolation test, and the CI baseline regression gate).
+**ahead of** the roadmap milestones. Wave 0 is closed: supervised lifecycle
+with graceful shutdown, startup IMAP resume, and wired `TriggerSync`
+(`docs/roadmap.md` “Known gaps” tracks what remains — the `unshare` webview
+isolation test and the phase-4 security matrix rows).
 
 **CI pipelines:**
-- `ci.yml` — lint, test, integration, sqlx, doc, supply-chain, benches, coverage
+- `ci.yml` — lint, test, integration, sqlx, doc, supply-chain, deps (cargo
+  machete), docs-links, benches (SLA + >10% baseline regression gate),
+  coverage
 - `release.yml` — cross-platform release builds (linux/macos/windows) triggered on `v*` tags
 - `sbom.yml` — CycloneDX SBOM generation, attached to GitHub releases
 - `fuzz-weekly.yml` — weekly fuzz corpus regression

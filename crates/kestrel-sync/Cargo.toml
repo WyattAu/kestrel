@@ -14,7 +14,6 @@ workspace = true
 kestrel-core = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
@@ -22,7 +21,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
-webpki-roots = { workspace = true }
 # IMAP transport per ADR 0005 / ADR 0010: `imap-flow` was renamed upstream to
 # `imap-next` and is consumed from crates.io.
 imap-next = { version = "0.3", features = ["stream", "starttls", "ext_condstore_qresync", "ext_namespace", "ext_utf8"] }

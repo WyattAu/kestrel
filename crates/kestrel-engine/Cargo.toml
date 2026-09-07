@@ -22,7 +22,6 @@ kestrel-filter = { workspace = true }
 kestrel-calcard = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 serde_json = { workspace = true }
 

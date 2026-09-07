@@ -14,8 +14,6 @@ workspace = true
 kestrel-core = { workspace = true }
 kestrel-engine = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 slint = { version = "1.17", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2"] }
 wry = "0.56"
@@ -54,3 +52,8 @@ scraper = "0.21"
 [[bench]]
 name = "gui_startup"
 harness = false
+
+# cargo-machete: raw-window-handle is only referenced via the `tray` feature
+# (`dep:raw-window-handle`), so static analysis flags it as unused.
+[package.metadata.cargo-machete]
+ignored = ["raw-window-handle"]
