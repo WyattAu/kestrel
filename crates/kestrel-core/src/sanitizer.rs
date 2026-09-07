@@ -340,6 +340,44 @@ mod tests {
         assert_eq!(count_remote_refs(html), 4);
     }
 
+    /// Mirrors the `fuzz_html_sanitizer` invariant check: does `needle`
+    /// appear inside a tag (attribute position) rather than as text?
+    fn in_tag_context(haystack: &str, needle: &str) -> bool {
+        let lower = haystack.to_lowercase();
+        let mut search_from = 0;
+        while let Some(pos) = lower[search_from..].find(needle) {
+            let abs = search_from + pos;
+            // Nearest '<' or '>' before the match: '<' first => inside a tag.
+            let before = lower[..abs].rfind(['<', '>']);
+            match before {
+                Some(idx) if lower.as_bytes()[idx] == b'<' => return true,
+                _ => {
+                    search_from = abs + needle.len();
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn regression_crash_fragment_never_leaks_event_handler() {
+        // Regression for the committed fuzz artifact `3085220a…` (crash
+        // input bytes `}\x08onerror=\x0e`, found by fuzz_html_sanitizer).
+        // The fragment must never be re-emitted as an active event-handler
+        // attribute or script tag, and must not panic.
+        let raw: &[u8] = b"}\x08onerror=\x0e";
+        let s = sanitize_html_body(&String::from_utf8_lossy(raw));
+        let out = s.html.to_lowercase();
+        assert!(!out.contains("<script"), "script tag leaked: {}", s.html);
+        for handler in ["onerror=", "onload=", "onclick=", "onmouseover="] {
+            assert!(
+                !in_tag_context(&out, handler),
+                "event handler {handler} leaked in tag: {}",
+                s.html
+            );
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(crate::testkit::proptest_cases()))]
 
