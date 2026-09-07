@@ -8,8 +8,9 @@ use kestrel_core::{
         AccountSummary, FolderSummary, MessagePage, MessageSummary, MessageView, SortDir,
         SortField, SortSpec,
     },
-    theme::Theme,
 };
+
+use crate::theme::Theme;
 
 /// Which pane has focus (requirements §5: 3-pane + focus mode).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

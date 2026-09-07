@@ -12,7 +12,6 @@ workspace = true
 
 [dependencies]
 kestrel-core = { workspace = true }
-kestrel-crypto = { workspace = true }
 kestrel-engine = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

@@ -30,7 +30,6 @@ pub mod sasl;
 pub mod secrets;
 pub mod store_model;
 pub mod testkit;
-pub mod theme;
 pub mod threading;
 /// Civil-time formatting utilities (unix-ms → human-readable strings).
 pub mod time;
