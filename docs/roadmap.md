@@ -62,6 +62,12 @@ Issue numbers refer to the GitHub backlog (phase/epic labels). The
 `protocol_surface_matches_documentation` test in `kestrel-core` guards
 `docs/message-protocol.md` drift at compile time.
 
+Phase-2 status note (post v0.1.0): the docker-gated integration suite
+(compose Dovecot/GreenMail/Radicale) is green in CI, but three exit
+criteria lack integration coverage — outbox restart-survival (#21),
+`UIDVALIDITY` reconciliation (#22), and QRESYNC/CONDSTORE deltas (#23).
+Those three tests are the remaining work for the phase-2 milestone.
+
 ## Definition of "phase done"
 
 1. All child issues closed; exit criteria above verified in CI.

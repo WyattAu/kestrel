@@ -1,5 +1,11 @@
 # Kestrel
 
+[![CI](https://github.com/WyattAu/kestrel/actions/workflows/ci.yml/badge.svg)](https://github.com/WyattAu/kestrel/actions/workflows/ci.yml)
+[![Release](https://github.com/WyattAu/kestrel/actions/workflows/release.yml/badge.svg)](https://github.com/WyattAu/kestrel/actions/workflows/release.yml)
+[![SBOM](https://github.com/WyattAu/kestrel/actions/workflows/sbom.yml/badge.svg)](https://github.com/WyattAu/kestrel/actions/workflows/sbom.yml)
+[![release](https://img.shields.io/github/v/release/WyattAu/kestrel)](https://github.com/WyattAu/kestrel/releases/latest)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 A high-performance, modular email client in Rust with frontends sharing one
 core engine:
 
@@ -10,6 +16,21 @@ core engine:
 
 Offline-first, IMAP/JMAP + SMTP, SQLite + Tantivy full-text search,
 zero-trust HTML rendering. Licensed under [Apache-2.0](LICENSE).
+
+## Install
+
+Prebuilt, attested binaries for Linux (x64/aarch64), macOS (Intel/Apple
+Silicon), and Windows: grab the latest archive from
+[Releases](https://github.com/WyattAu/kestrel/releases/latest) and verify it
+before running:
+
+```bash
+# checksum (SHA256SUMS.txt is attached to each release)
+sha256sum -c <(grep linux-gnu SHA256SUMS.txt)
+
+# SLSA build provenance (proves GitHub Actions built the artifact)
+gh attestation verify kestrel-*-x86_64-unknown-linux-gnu.tar.gz -R WyattAu/kestrel
+```
 
 Status: implementation is **ahead of the roadmap** — core storage/parsing,
 sync, TUI and GUI code all exist (see the [roadmap](docs/roadmap.md) status

@@ -73,6 +73,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          cache-on-failure: true
+          # Vendored legs compile ~10 min of OpenSSL from source; keep that
+          # cache even when a leg fails (most failures are in later steps,
+          # e.g. smoke/attest) so retry runs start warm.
 
       # openssl-src builds OpenSSL via perl; windows runners' Git-Bash perl
       # lacks Locale::Maketext::Simple (the @INC in the failure log is
@@ -231,6 +235,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       # Full workspace compile (unit + doc tests), so mirror the job dep set
       # that makes ci.yml's test/integration jobs green.
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev libssl-dev pkg-config
