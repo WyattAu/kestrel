@@ -97,15 +97,17 @@ jobs:
       - name: Build release binaries
         shell: bash
         run: |
-          PKG_ARGS=""
+          ARGS=""
           for pkg in ${{ matrix.crates }}; do
-            PKG_ARGS="${PKG_ARGS} -p ${pkg}"
+            ARGS="${ARGS} -p ${pkg}"
           done
-          VENDORED=""
           if [ "${{ matrix.vendored }}" = "true" ]; then
-            VENDORED="--features kestrel-crypto/vendored-openssl"
+            # --features pkg/feat requires that package in the selection
+            # ("none of the selected packages contains this feature"), so
+            # kestrel-crypto must be added explicitly.
+            ARGS="${ARGS} -p kestrel-crypto --features kestrel-crypto/vendored-openssl"
           fi
-          cargo build --release --locked --target ${{ matrix.target }} ${PKG_ARGS} ${VENDORED}
+          cargo build --release --locked --target ${{ matrix.target }} ${ARGS}
 
       - name: Strip binaries (Unix)
         if: runner.os != 'Windows'
