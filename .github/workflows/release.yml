@@ -127,6 +127,31 @@ jobs:
             strip "target/${{ matrix.target }}/release/$bin" || true
           done
 
+      # Relocated-binary smoke test. CI compiles in-tree, so a binary that
+      # still references the build tree at runtime (e.g. an env!("CARGO_MANIFEST_DIR")
+      # migration path) passes every in-tree check and only breaks in the
+      # field. Boot the engine from a scratch dir with a fresh fake HOME;
+      # `tui --help` exits 0 after full engine startup. Skipped on legs whose
+      # target cannot execute on the runner (aarch64 cross-build; x86_64
+      # macOS built from an arm64 host would need Rosetta) — the class of
+      # bug this guards against is host-architecture-independent.
+      - name: Smoke-test relocated binaries
+        if: matrix.cross != true && matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          set -e
+          SMOKE="$(mktemp -d)"
+          EXT=""
+          if [ "${{ runner.os }}" = "Windows" ]; then EXT=".exe"; fi
+          for bin in ${{ matrix.crates }}; do
+            [ -x "target/${{ matrix.target }}/release/$bin$EXT" ] || { echo "missing binary: $bin$EXT"; exit 1; }
+          done
+          cp "target/${{ matrix.target }}/release/kestrel-tui$EXT" "$SMOKE/"
+          cd "$SMOKE"
+          HOME="$SMOKE" XDG_DATA_HOME="$SMOKE/data" timeout 60 "./kestrel-tui$EXT" --help > smoke.log 2>&1
+          echo "--- relocated tui --help (engine boot) ---"
+          tail -5 smoke.log
+
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
         run: |

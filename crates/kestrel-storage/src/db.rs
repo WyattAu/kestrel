@@ -1,10 +1,7 @@
 //! Database bootstrap (ADR 0003, ADR 0009): dual `SQLite` databases with the
 //! mandated pragmas, single-writer pools, append-only migrations.
 
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use sqlx::{
     migrate::Migrator,
@@ -54,8 +51,8 @@ impl Databases {
         }
         let cache = open_one(cache_path).await?;
         let data = open_one(data_path).await?;
-        run_migrations(&cache, migrations_dir("cache")).await?;
-        run_migrations(&data, migrations_dir("data")).await?;
+        run_migrations(&cache, &CACHE_MIGRATOR).await?;
+        run_migrations(&data, &DATA_MIGRATOR).await?;
         Ok(Self { cache, data })
     }
 
@@ -113,16 +110,16 @@ async fn open_one(path: &Path) -> StorageResult<DbPools> {
     Ok(DbPools { write, read })
 }
 
-fn migrations_dir(kind: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("migrations")
-        .join(kind)
-}
+/// Migrations are embedded into the binary at compile time by
+/// `sqlx::migrate!` (paths are relative to this crate's manifest). A
+/// release binary therefore never touches the build tree at runtime, and
+/// a missing or malformed migration directory fails the build, not a
+/// user's first launch. Checksums recorded in `_sqlx_migrations` are
+/// computed from the same files, so existing databases are unaffected.
+static CACHE_MIGRATOR: Migrator = sqlx::migrate!("migrations/cache");
+static DATA_MIGRATOR: Migrator = sqlx::migrate!("migrations/data");
 
-async fn run_migrations(pools: &DbPools, dir: PathBuf) -> StorageResult<()> {
-    let migrator = Migrator::new(dir.as_path())
-        .await
-        .map_err(|e| StorageError::Migration(format!("{}: {e}", dir.display())))?;
+async fn run_migrations(pools: &DbPools, migrator: &Migrator) -> StorageResult<()> {
     migrator
         .run(&pools.write)
         .await
