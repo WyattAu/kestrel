@@ -15,6 +15,12 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # id-token/attestations: the provenance step signs via OIDC (SLSA).
+    # Job-scoped so the test job keeps only what it needs.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -148,17 +154,17 @@ jobs:
           done
           cp "target/${{ matrix.target }}/release/kestrel-tui$EXT" "$SMOKE/"
           cd "$SMOKE"
-          # With stdout piped, `tui --help` boots the engine (embedded
-          # migrations start storage) and then refuses for lack of a TTY.
-          # Exit 124 = engine booted and hung in its run loop — also fine:
-          # the TTY check comes after boot. Any earlier failure
-          # (e.g. migration_failed) means the artifact is broken.
+          # With stdout piped, a healthy boot is: engine starts (embedded
+          # migrations run), then the TUI refuses for lack of a TTY and
+          # exits 1 — or hangs in the run loop until timeout kills it
+          # (exit 124). Boot failure (e.g. migration_failed) is the only
+          # failure mode this gate exists for.
           set +e
           HOME="$SMOKE" XDG_DATA_HOME="$SMOKE/data" timeout 60 "./kestrel-tui$EXT" --help > smoke.log 2>&1
           STATUS=$?
           set -e
-          if [ "$STATUS" -ne 0 ] && [ "$STATUS" -ne 124 ]; then
-            echo "relocated binary failed (exit $STATUS):"
+          if [ "$STATUS" -ne 124 ] && ! grep -q "stdout is not a terminal" smoke.log; then
+            echo "relocated binary did not boot cleanly (exit $STATUS):"
             cat smoke.log
             exit 1
           fi
@@ -167,7 +173,7 @@ jobs:
             cat smoke.log
             exit 1
           fi
-          echo "--- relocated tui boot (exit $STATUS) ---"
+          echo "--- relocated tui boot ok (exit $STATUS) ---"
           tail -5 smoke.log
 
       - name: Package (tar.gz)

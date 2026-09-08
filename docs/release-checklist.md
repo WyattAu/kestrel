@@ -35,9 +35,11 @@ come from the `v0.1.0-rc.1` dry-run series (six runs, six real defects).
 - Windows builds OpenSSL via Strawberry perl (`OPENSSL_SRC_PERL`).
 - **Relocated-binary smoke test** runs on every leg that can execute its
   target: fresh `HOME`, engine boot via `kestrel-tui --help`, before any
-  asset upload. A binary that references the build tree at runtime
-  (the `CARGO_MANIFEST_DIR` migration-path bug) fails here, not in the
-  field.
+  asset upload. Pass criterion: the TTY refusal (`stdout is not a
+  terminal`) or a timeout kill (exit 124) — both mean the engine booted
+  — with no `migration_failed` and no build-tree path in the output.
+  A binary that references the build tree at runtime (the
+  `CARGO_MANIFEST_DIR` migration-path bug) fails here, not in the field.
 - SBOM (`sbom.yml`) attaches `kestrel-sbom.json` (CycloneDX).
 
 ## 4. Artifact verification (before announcing)
