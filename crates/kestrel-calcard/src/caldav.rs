@@ -34,6 +34,21 @@ static PROPFIND: LazyLock<Method> =
 static REPORT: LazyLock<Method> =
     LazyLock::new(|| Method::from_bytes(b"REPORT").unwrap_or(Method::GET));
 
+/// Workspace-standard HTTP client: rustls transport TLS only (ADR 0016).
+/// Shared across all `CalDAV` operations for connection pooling.
+///
+/// Invariant: a builder with only `.use_rustls_tls()` set has no
+/// fallible configuration (no custom certs/proxies/timeouts), so `build`
+/// cannot fail; if the TLS feature set is ever mis-unified away from
+/// rustls, failing loudly here is correct (ADR 0016 enforcement).
+static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    #[allow(clippy::expect_used)] // documented invariant, see above + ADR 0016
+    reqwest::Client::builder()
+        .use_rustls_tls()
+        .build()
+        .expect("infallible rustls client config (ADR 0016)")
+});
+
 /// A `CalDAV` calendar as discovered from the server.
 #[derive(Clone, Debug)]
 pub struct CalDavCalendar {
@@ -70,7 +85,7 @@ impl CalDavClient {
         Self {
             base_url,
             auth: AuthMethod::Bearer(auth_token),
-            http: reqwest::Client::new(),
+            http: LazyLock::force(&HTTP).clone(),
         }
     }
 
@@ -80,7 +95,7 @@ impl CalDavClient {
         Self {
             base_url,
             auth: AuthMethod::Basic { username, password },
-            http: reqwest::Client::new(),
+            http: LazyLock::force(&HTTP).clone(),
         }
     }
 
@@ -95,7 +110,7 @@ impl CalDavClient {
     #[instrument(skip_all, fields(host))]
     pub async fn discover(host: &str) -> Result<Self, KestrelError> {
         let url = format!("https://{host}/.well-known/caldav");
-        let resp = reqwest::Client::new().get(&url).send().await.map_err(|e| {
+        let resp = LazyLock::force(&HTTP).get(&url).send().await.map_err(|e| {
             KestrelError::ConnectionLost {
                 detail: e.to_string(),
             }
@@ -109,7 +124,7 @@ impl CalDavClient {
         Ok(Self {
             base_url: location,
             auth: AuthMethod::Bearer(String::new()),
-            http: reqwest::Client::new(),
+            http: LazyLock::force(&HTTP).clone(),
         })
     }
 

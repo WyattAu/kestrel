@@ -33,6 +33,7 @@ fn env_or_skip(name: &str) -> String {
 
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
+        .use_rustls_tls() // ADR 0016
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client")

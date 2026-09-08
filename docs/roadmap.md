@@ -39,6 +39,14 @@ Closed this cycle (Wave 0 + CI verification):
   runner pinning via the `BENCH_RUNNER` repository variable (issue #8).
 
 Remaining gaps:
+- **Transport TLS posture resolved (ADR 0016):** rustls is the sole
+  transport-TLS backend (IMAP/STARTTLS, SMTP, JMAP, CalDAV/CardDAV, OAuth
+  endpoints) and every `reqwest::Client` construction pins
+  `.use_rustls_tls()` — enforced by `scripts/check-tls-backend.sh` in CI.
+  Two documented `openssl-sys` exceptions remain in the dependency tree,
+  neither terminating a transport connection: Sequoia's `crypto-openssl`
+  primitive backend (ADR 0012) and mailkit's ungated `resend` reqwest
+  (workspace `Cargo.toml` comment; expires when mailkit fixes the gate).
 - **Phase 4 security matrix:** every §7 row (T1–T7) now has named,
   CI-enforced coverage — including the `unshare -n` webview
   network-isolation runtime test (issue #6, `scripts/webview-netns-test.sh`)

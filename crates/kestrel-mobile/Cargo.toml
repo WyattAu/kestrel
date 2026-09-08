@@ -21,9 +21,11 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2"] }
 
-# imap-next (via kestrel-sync) has no rustls backend: native-tls pulls
-# openssl-sys, which needs a real OpenSSL for the android target. Build
-# OpenSSL from source for android only (host builds keep the system lib).
+# Sequoia's crypto-openssl backend (ADR 0012) pulls openssl-sys, which needs
+# a real OpenSSL for the android target. Build OpenSSL from source for
+# android only (host builds keep the system lib). Transport TLS itself is
+# rustls-only (ADR 0016); this vendored build exists solely for the crypto
+# primitive backend.
 [target.'cfg(target_os = "android")'.dependencies]
 openssl = { version = "0.10", features = ["vendored"] }
 

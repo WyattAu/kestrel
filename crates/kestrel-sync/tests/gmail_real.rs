@@ -65,6 +65,7 @@ async fn obtain_access_token() -> (String, String) {
     let refresh_token = env_or_skip("KESTREL_GMAIL_REFRESH_TOKEN");
 
     let http = reqwest::Client::builder()
+        .use_rustls_tls() // ADR 0016
         .timeout(Duration::from_secs(30))
         .build()
         .expect("reqwest client");

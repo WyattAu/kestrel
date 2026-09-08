@@ -118,6 +118,9 @@ impl JmapSyncService {
     async fn run_one_cycle(&self, cancel: &CancellationToken) -> SyncResult<()> {
         self.emit_state(ConnectionState::Connecting).await;
         let http = reqwest::Client::builder()
+            // rustls-only transport (ADR 0016): without this pin the
+            // unified feature set would silently select native-tls.
+            .use_rustls_tls()
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| SyncError::Protocol(format!("http client: {e}")))?;

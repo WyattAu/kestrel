@@ -54,7 +54,10 @@ async fn ensure_test_calendar(_client: &CalDavClient) -> String {
     );
     // Radicale path: /{username}/{collection_name}/
     let cal_url = format!("{base}/kestrel/test/");
-    let _ = reqwest::Client::new()
+    let _ = reqwest::Client::builder()
+        .use_rustls_tls()
+        .build()
+        .expect("rustls client")
         .request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), &cal_url)
         .header("Authorization", auth)
         .header("Content-Type", "text/xml")
@@ -192,7 +195,10 @@ async fn integration_put_and_delete_event() {
         base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
     );
 
-    let resp = reqwest::Client::new()
+    let resp = reqwest::Client::builder()
+        .use_rustls_tls()
+        .build()
+        .expect("rustls client")
         .put(&event_url)
         .header("Authorization", &auth)
         .header("Content-Type", "text/calendar; charset=utf-8")
@@ -210,7 +216,10 @@ async fn integration_put_and_delete_event() {
     );
 
     // DELETE the event with auth
-    let resp = reqwest::Client::new()
+    let resp = reqwest::Client::builder()
+        .use_rustls_tls()
+        .build()
+        .expect("rustls client")
         .delete(&event_url)
         .header("Authorization", &auth)
         .send()
@@ -234,7 +243,13 @@ async fn integration_discover_well_known() {
 
     // Try .well-known/caldav discovery
     let url = format!("http://{host}/.well-known/caldav");
-    let resp = reqwest::Client::new().get(&url).send().await;
+    let resp = reqwest::Client::builder()
+        .use_rustls_tls()
+        .build()
+        .expect("rustls client")
+        .get(&url)
+        .send()
+        .await;
 
     match resp {
         Ok(r) => {

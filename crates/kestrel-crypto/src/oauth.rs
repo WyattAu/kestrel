@@ -350,7 +350,8 @@ mod tests {
     #[tokio::test]
     async fn refresh_roundtrip_via_credential_service() {
         let (base, handle) = spawn_mock_token_server().await;
-        let http = reqwest::Client::new();
+        // rustls-pinned per ADR 0016 (loopback http, but policy is uniform).
+        let http = reqwest::Client::builder().use_rustls_tls().build().unwrap();
         // Gmail preset shape, token endpoint overridden with the mock
         // (the real preset URL would hit Google's production endpoint).
         let provider = MailProvider {
@@ -380,7 +381,8 @@ mod tests {
     #[tokio::test]
     async fn refresh_access_token_rejects_invalid_token() {
         let (base, handle) = spawn_mock_token_server().await;
-        let http = reqwest::Client::new();
+        // rustls-pinned per ADR 0016 (loopback http, but policy is uniform).
+        let http = reqwest::Client::builder().use_rustls_tls().build().unwrap();
         let err = refresh_access_token(&http, &format!("{base}/token"), "client", "bad")
             .await
             .expect_err("should fail");
@@ -394,7 +396,8 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_access_token_network_error() {
-        let http = reqwest::Client::new();
+        // rustls-pinned per ADR 0016 (loopback http, but policy is uniform).
+        let http = reqwest::Client::builder().use_rustls_tls().build().unwrap();
         let err = refresh_access_token(&http, "http://127.0.0.1:1/nope", "client", "rt")
             .await
             .expect_err("should fail");

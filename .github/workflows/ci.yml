@@ -162,6 +162,15 @@ jobs:
       - name: Verify relative markdown links resolve
         run: bash scripts/check-doc-links.sh
 
+  tls-backend:
+    # ADR 0016: rustls is the sole transport-TLS backend; bans
+    # reqwest::Client::new() (native-tls under feature unification).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce rustls-only transport TLS
+        run: bash scripts/check-tls-backend.sh
+
   benches:
     # Pin hardware by setting the BENCH_RUNNER repository variable to a
     # self-hosted label (engineering-standards §5); default to GH-hosted.

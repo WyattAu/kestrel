@@ -123,7 +123,8 @@ async fn oauth_refresh_stress_30_cycles() {
 
     tokio::spawn(server.run(listener));
 
-    let http = reqwest::Client::new();
+    // rustls-pinned per ADR 0016 (loopback http, but policy is uniform).
+    let http = reqwest::Client::builder().use_rustls_tls().build().unwrap();
     let mut current_refresh;
     let mut seen_tokens = Vec::new();
 
@@ -191,7 +192,8 @@ async fn oauth_refresh_rejects_bad_token() {
 
     tokio::spawn(server.run(listener));
 
-    let http = reqwest::Client::new();
+    // rustls-pinned per ADR 0016 (loopback http, but policy is uniform).
+    let http = reqwest::Client::builder().use_rustls_tls().build().unwrap();
     let form = [
         ("grant_type", "refresh_token".to_string()),
         ("refresh_token", "completely_invalid_token".to_owned()),
