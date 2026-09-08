@@ -67,6 +67,15 @@ jobs:
         if: matrix.cross
         run: |
           sudo dpkg --add-architecture arm64
+          # arm64 packages live in the ports archive, not the main/security
+          # suites — adding the architecture without this source makes
+          # apt-get update 404 on binary-arm64 indexes and abort.
+          sudo tee /etc/apt/sources.list.d/arm64-ports.list > /dev/null <<'SOURCES'
+          deb [arch=arm64] http://ports.ubuntu.com/ noble main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ noble-updates main universe
+          SOURCES
+          # Scope the main archive to amd64 so it stops probing arm64.
+          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
@@ -81,11 +90,20 @@ jobs:
         run: |
           sudo apt-get update
           # webkit2gtk-4.1/gtk-3: kestrel-gui's wry viewport links WebKitGTK.
-          # libssl-dev: the engine pulls reqwest -> native-tls -> openssl-sys.
+          # libssl-dev: sequoia's crypto-openssl backend pulls openssl-sys
+          # (ADR 0012; transport TLS itself is rustls per ADR 0016).
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libssl-dev pkg-config
 
+      # matrix.crates is a space-separated list: one -p flag would leave the
+      # second package as a stray positional arg ("unexpected argument").
       - name: Build release binaries
-        run: cargo build --release --locked --target ${{ matrix.target }} -p ${{ matrix.crates }}
+        shell: bash
+        run: |
+          PKG_ARGS=""
+          for pkg in ${{ matrix.crates }}; do
+            PKG_ARGS="${PKG_ARGS} -p ${pkg}"
+          done
+          cargo build --release --locked --target ${{ matrix.target }} ${PKG_ARGS}
 
       - name: Strip binaries (Unix)
         if: runner.os != 'Windows'
