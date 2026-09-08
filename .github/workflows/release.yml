@@ -68,6 +68,17 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # openssl-src builds OpenSSL via perl; windows runners' Git-Bash perl
+      # lacks Locale::Maketext::Simple (the @INC in the failure log is
+      # MSYS2's), so build with Strawberry's perl explicitly.
+      - name: Use Strawberry Perl for vendored OpenSSL (Windows)
+        if: matrix.vendored && runner.os == 'Windows'
+        run: |
+          if (-not (Test-Path 'C:\Strawberry\perl\bin\perl.exe')) {
+            choco install strawberryperl -y --no-progress
+          }
+          Add-Content $env:GITHUB_ENV "OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe"
+
       - name: Install cross-compilation toolchain (aarch64-linux)
         if: matrix.cross
         run: |

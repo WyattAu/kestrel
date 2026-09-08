@@ -108,7 +108,7 @@ rustls-pki-types = "1"
 webpki-roots = "0.26"
 
 # Crypto / credentials
-keyring = { version = "3", features = ["sync-secret-service", "windows-native", "apple-native"] }
+keyring = { version = "3", features = ["async-secret-service", "windows-native", "apple-native"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["simple"] }

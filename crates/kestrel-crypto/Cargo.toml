@@ -48,6 +48,17 @@ oauth-toolkit = { workspace = true }
 # openssl comment above.
 vendored-openssl = ["openssl/vendored"]
 
+# Feature carrier for keyring's `async-secret-service` backend (zbus, pure
+# Rust — replaces the libdbus C dependency that broke aarch64 cross
+# builds). keyring does not select a runtime on secret-service itself, so
+# the workspace pins one: tokio (our runtime) + crypto-rust (no extra
+# native dep). Never imported here — cargo-machete ignored below.
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "4", default-features = false, features = ["rt-tokio-crypto-rust"] }
+
+[package.metadata.cargo-machete]
+ignored = ["secret-service"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

@@ -23,8 +23,9 @@ criticism is **already stale**:
 However, `openssl-sys` is still in every workspace tree, via exactly two
 paths:
 
-1. **Deliberate:** `sequoia-openpgp` with the `crypto-openssl` backend
-   (ADR 0012) — OpenSSL as a *crypto primitive* provider, not transport.
+1. **Deliberate:** OpenSSL as a crypto-primitive provider — `sequoia-openpgp`
+   with the `crypto-openssl` backend (ADR 0012) and the first-party `openssl`
+   dependency backing S/MIME in `kestrel-crypto::smime`.
 2. **Forced workaround:** `mailkit` 0.2.0 ships an ungated `ResendProvider`
    that references `reqwest`, so `kestrel-core` must enable mailkit's
    `resend` feature, whose reqwest dependency carries **default features**
@@ -44,9 +45,13 @@ rustls-only declarations. The declarations are currently inert.
    I/O: IMAP (incl. STARTTLS upgrade), SMTP submission, JMAP, CalDAV /
    CardDAV, and OAuth token endpoints. TLS 1.3 preferred, 1.2 minimum
    (matching the `lettre` posture in `docs/sync-engine.md`).
-2. **OpenSSL in the dependency tree is restricted to two documented
-   exceptions**, neither of which terminates a transport connection:
-   - Sequoia's `crypto-openssl` primitive backend (ADR 0012);
+2. **OpenSSL in the dependency tree is restricted to documented
+   exceptions**, none of which terminate a transport connection:
+   - OpenSSL as a *crypto-primitive* provider: Sequoia's `crypto-openssl`
+     backend (ADR 0012) and the first-party `openssl` crate dependency in
+     `kestrel-crypto` used by S/MIME (`smime.rs` — X509/PKey/CMS are
+     OpenSSL-native operations; a rustls substitution would be a crypto
+     rewrite, not a transport choice);
    - mailkit's transitive reqwest, until upstream gates `ResendProvider`
      properly — at which point the `resend` feature is dropped and this
      exception expires (tracked in the issue backlog).
@@ -64,12 +69,12 @@ rustls-only declarations. The declarations are currently inert.
   (verification flags, proxy env handling) disappear from the transport
   path.
 - The Android vendored-OpenSSL build (issue #18) exists **only** because of
-  Sequoia's `crypto-openssl`, not imap-next — the stale comment in
-  `kestrel-mobile/Cargo.toml` is corrected by this ADR. If a future Sequoia
-  release makes `crypto-rust` production-grade (or an equivalent pure-Rust
-  backend), dropping `crypto-openssl` would remove the last openssl-sys
-  path and with it the vendored build; that is a superseding decision, not
-  work done silently.
+  the crypto-primitive exceptions (Sequoia backend + S/MIME), not imap-next
+  — the stale comment in `kestrel-mobile/Cargo.toml` is corrected by this
+  ADR. If a future Sequoia release makes `crypto-rust` production-grade and
+  an S/MIME alternative exists, dropping `crypto-openssl` would remove the
+  sequoia openssl-sys path; that is a superseding decision, not work done
+  silently.
 - oauth-toolkit 0.2.0 constructs its own internal `reqwest::Client::new()`
   in a few non-injectable spots; under unification those are native-tls
   too. Our call sites pass an explicit rustls client wherever the API
