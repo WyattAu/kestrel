@@ -3,9 +3,14 @@
 //! Write path: temp file in `blobs/tmp/` (`O_CREAT|O_EXCL`) → write + hash
 //! concurrently → fsync → atomic rename to `blobs/ab/cd/<sha256>` → registry
 //! row upsert. Crashes leave only orphan temp files (swept at startup).
-//! Reads open with `O_NOFOLLOW`; symlinked targets are rejected.
+//! Reads open with `O_NOFOLLOW` (Windows: `FILE_FLAG_OPEN_REPARSE_POINT`);
+//! symlinked/reparse-point targets are rejected.
 
-use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt, path::PathBuf};
+use std::path::PathBuf;
+#[cfg(unix)]
+use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt};
+#[cfg(windows)]
+use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
 
 use kestrel_core::ids::BlobHash;
 use sha2::{Digest, Sha256};
@@ -126,24 +131,31 @@ impl BlobStore {
     }
 
     /// Opens a blob for reading with `O_NOFOLLOW` (threat model §4.3: a
-    /// local attacker swapping in a symlink is rejected).
+    /// local attacker swapping in a symlink is rejected). On Windows the
+    /// equivalent guard is `FILE_FLAG_OPEN_REPARSE_POINT`, which opens the
+    /// reparse point itself instead of following it to the target.
     ///
     /// # Errors
     /// [`StorageError::BlobMissing`] when absent; symlink targets are
     /// rejected as IO errors.
     pub fn open_nofollow_blocking(&self, hash: &BlobHash) -> StorageResult<std::fs::File> {
         let path = self.path_for(hash);
-        OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    StorageError::BlobMissing(hash.to_hex())
-                } else {
-                    StorageError::BlobIo(format!("{}: {e}", path.display()))
-                }
-            })
+        #[cfg(unix)]
+        let mut open = OpenOptions::new();
+        #[cfg(unix)]
+        open.read(true).custom_flags(libc::O_NOFOLLOW);
+        #[cfg(windows)]
+        let mut open = OpenOptions::new();
+        #[cfg(windows)]
+        open.read(true)
+            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+        open.open(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                StorageError::BlobMissing(hash.to_hex())
+            } else {
+                StorageError::BlobIo(format!("{}: {e}", path.display()))
+            }
+        })
     }
 
     /// Unlinks the file backing a hash (GC sweep step).
@@ -218,6 +230,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn nofollow_rejects_symlinks() {
         let tmp = tempfile::tempdir().unwrap();

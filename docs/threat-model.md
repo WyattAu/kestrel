@@ -69,7 +69,8 @@ mail server, (c) email sender (primary — anyone can send mail),
 
 ### 4.3 Storage & CAS (M11–M13)
 - Blobs written via `O_NOFOLLOW` + atomic rename + hash verification
-  (`docs/schema.md` §4.1); symlinked targets rejected.
+  (`docs/schema.md` §4.1); symlinked targets rejected (Windows:
+  `FILE_FLAG_OPEN_REPARSE_POINT`, reparse-point targets rejected).
 - Per-account storage quota (configurable); cache.db wipe is a safe pressure
   valve (rebuildable by design).
 - File permissions 0700 on data dirs; never world-readable.
