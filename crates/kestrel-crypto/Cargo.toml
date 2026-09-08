@@ -28,6 +28,10 @@ hmac = { workspace = true }
 pbkdf2 = { workspace = true }
 # S/MIME CMS bindings (Phase 5 hardening, requirements §9 addendum — landed
 # early alongside OpenPGP). License exception per ADR 0012.
+# The `vendored-openssl` feature (below) makes this build from source
+# (openssl-src) for release legs without a target-arch OpenSSL toolchain
+# (macos-x64 cross from an arm64 runner, windows-msvc); host/linux builds
+# use the system libssl.
 openssl = "0.10"
 # OpenPGP (Phase 5, requirements §9). Sequoia 2.x (fixed RUSTSEC-2025-0136
 # panic-on-malicious-PKESK in 1.x). OpenSSL crypto backend (production-ready
@@ -37,6 +41,12 @@ sequoia-openpgp = { version = "2.4", default-features = false, features = ["cryp
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # OAuth2 flows (PKCE/loopback/token/provider presets) — extracted crate.
 oauth-toolkit = { workspace = true }
+
+[features]
+# Builds OpenSSL from source (openssl-src) so openssl-sys needs no system
+# library. Required on release legs without a target-arch OpenSSL; see the
+# openssl comment above.
+vendored-openssl = ["openssl/vendored"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

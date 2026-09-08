@@ -22,11 +22,13 @@ jobs:
           # Host-arch legs build both frontends. The aarch64-linux leg is
           # cross-compiled and therefore TUI-only: kestrel-gui links wry →
           # WebKitGTK, which has no aarch64 cross sysroot on ubuntu-latest
-          # (the packaged -dev:arm64 set is incomplete for webkit2gtk-4.1),
-          # and the engine's native-tls → openssl-sys path needs an arm64
-          # OpenSSL, provided below via the arm64 libssl-dev multiarch
-          # packages. A native aarch64 runner (or a full arm64 webkit
-          # sysroot) is the tracked follow-up (issue #16).
+          # (the packaged -dev:arm64 set is incomplete for webkit2gtk-4.1).
+          # A native aarch64 runner (or a full arm64 webkit sysroot) is the
+          # tracked follow-up (issue #16).
+          #
+          # `vendored` legs have no target-arch OpenSSL toolchain: OpenSSL
+          # (sequoia crypto-openssl + S/MIME, ADR 0012) is built from source
+          # via kestrel-crypto/vendored-openssl instead of system libssl.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             archive: tar.gz
@@ -35,10 +37,12 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
+            vendored: true
             crates: kestrel-tui
           - target: x86_64-apple-darwin
             os: macos-latest
             archive: tar.gz
+            vendored: true
             crates: kestrel-tui kestrel-gui
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -47,6 +51,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
+            vendored: true
             crates: kestrel-tui kestrel-gui
 
     steps:
@@ -66,27 +71,20 @@ jobs:
       - name: Install cross-compilation toolchain (aarch64-linux)
         if: matrix.cross
         run: |
-          sudo dpkg --add-architecture arm64
-          # arm64 packages live in the ports archive, not the main/security
-          # suites — adding the architecture without this source makes
-          # apt-get update 404 on binary-arm64 indexes and abort.
-          sudo tee /etc/apt/sources.list.d/arm64-ports.list > /dev/null <<'SOURCES'
-          deb [arch=arm64] http://ports.ubuntu.com/ noble main universe
-          deb [arch=arm64] http://ports.ubuntu.com/ noble-updates main universe
-          SOURCES
-          # Scope the main archive to amd64 so it stops probing arm64.
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu libssl-dev:arm64
+          sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          # openssl-sys probes pkg-config; allow it to find the arm64
-          # libssl-dev:arm64 rather than the host x86_64 one.
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+          # OpenSSL for the target comes from kestrel-crypto/vendored-openssl
+          # (built from source by openssl-src); no multiarch libssl-dev or
+          # ports-archive apt setup needed. The deb822-sources approach this
+          # replaces 404'd on binary-arm64 security indexes.
 
       - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+        # Host-arch GUI libs (webkit2gtk/gtk) are only needed by legs that
+        # link wry natively; the TUI-only cross leg skips them.
+        if: runner.os == 'Linux' && !matrix.cross
         run: |
           sudo apt-get update
           # webkit2gtk-4.1/gtk-3: kestrel-gui's wry viewport links WebKitGTK.
@@ -103,7 +101,11 @@ jobs:
           for pkg in ${{ matrix.crates }}; do
             PKG_ARGS="${PKG_ARGS} -p ${pkg}"
           done
-          cargo build --release --locked --target ${{ matrix.target }} ${PKG_ARGS}
+          VENDORED=""
+          if [ "${{ matrix.vendored }}" = "true" ]; then
+            VENDORED="--features kestrel-crypto/vendored-openssl"
+          fi
+          cargo build --release --locked --target ${{ matrix.target }} ${PKG_ARGS} ${VENDORED}
 
       - name: Strip binaries (Unix)
         if: runner.os != 'Windows'
