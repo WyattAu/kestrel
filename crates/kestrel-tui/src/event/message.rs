@@ -1,7 +1,10 @@
 #![allow(clippy::wildcard_imports)] // sibling-module glue (issue #4)
 //! Per-message and bulk actions: delete, flag, read-state, archive, snooze.
 
-use kestrel_core::protocol::{Command, CommandPayload, FrontendKind, Reply};
+use kestrel_core::{
+    ids::{AccountId, MessageId},
+    protocol::{Command, CommandPayload, FolderRole, FrontendKind, Reply},
+};
 use kestrel_engine::EngineHandle;
 
 use crate::{
@@ -125,12 +128,60 @@ pub(crate) async fn toggle_mark_unread(handle: &EngineHandle, state: &mut AppSta
     }
 }
 
-#[allow(clippy::unused_async)]
-pub(crate) async fn archive_selected(_handle: &EngineHandle, state: &mut AppState) {
+/// Move `ids` to the account's Archive folder (via role), or fall back to
+/// a folder literally named "Archive". Returns the count actually moved.
+///
+/// Resolves the target from the cached folder list: the engine's
+/// `ListFolders` reply is authoritative (special-use `\Archive` beats name
+/// heuristics), so no second round-trip is needed.
+async fn move_to_archive(
+    handle: &EngineHandle,
+    state: &AppState,
+    account: AccountId,
+    ids: Vec<MessageId>,
+) -> Option<Reply> {
+    let archive = state
+        .folders
+        .iter()
+        .find(|f| f.account == account && matches!(f.role, Some(FolderRole::Archive)))
+        .or_else(|| {
+            state
+                .folders
+                .iter()
+                .find(|f| f.account == account && f.remote_name.eq_ignore_ascii_case("Archive"))
+        })?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let sent = handle
+        .commands
+        .send(Command {
+            id: next_request_id(),
+            origin: FrontendKind::Tui,
+            payload: CommandPayload::MoveMessages {
+                messages: ids,
+                to: archive.id,
+                reply: tx,
+            },
+        })
+        .await;
+    sent.ok()?;
+    rx.await.ok()
+}
+
+pub(crate) async fn archive_selected(handle: &EngineHandle, state: &mut AppState) {
     let Some(id) = state.message_id() else {
         return;
     };
-    state.status = format!("archived {id}");
+    let Some(account) = state.account().map(|a| a.id) else {
+        return;
+    };
+    match move_to_archive(handle, state, account, vec![id]).await {
+        Some(Reply::Accepted) => {
+            state.status = "archived".into();
+            refresh_messages(handle, state).await;
+        }
+        Some(_) => state.status = "archive failed".into(),
+        None => state.status = "no archive folder".into(),
+    }
 }
 
 pub(crate) async fn execute_snooze(handle: &EngineHandle, state: &mut AppState) {
@@ -235,11 +286,20 @@ pub(crate) async fn bulk_archive(handle: &EngineHandle, state: &mut AppState) {
         return;
     }
     let count = ids.len();
-    // For now, just report the action; archive folder lookup requires folder list.
-    state.toggle_multi_select();
-    state.status = format!("archived {count} message(s)");
-    refresh_messages(handle, state).await;
-    let _ = handle;
+    let Some(account) = state.account().map(|a| a.id) else {
+        state.mode = Mode::Normal;
+        return;
+    };
+    match move_to_archive(handle, state, account, ids).await {
+        Some(Reply::Accepted) => {
+            state.toggle_multi_select();
+            state.status = format!("archived {count} message(s)");
+            refresh_messages(handle, state).await;
+        }
+        Some(_) => state.status = "archive failed".into(),
+        None => state.status = "no archive folder".into(),
+    }
+    state.mode = Mode::Normal;
 }
 
 /// Toggle read/unread for all messages selected in multi-select mode.

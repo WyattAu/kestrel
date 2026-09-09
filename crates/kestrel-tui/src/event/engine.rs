@@ -143,6 +143,11 @@ pub(crate) async fn load_preview(
         .await;
     if let Ok(Reply::Message(view)) = rx.await {
         state.preview = Some(view);
+        // Monotonic signal for the interaction gate (#27): a preview was
+        // *successfully opened* during the session. Unlike `preview` itself
+        // this survives later page refreshes (which clear the preview by
+        // design when the folder content changes under the user).
+        state.preview_opens += 1;
     }
 }
 

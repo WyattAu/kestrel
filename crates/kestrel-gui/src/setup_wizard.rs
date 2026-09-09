@@ -30,6 +30,108 @@ pub(crate) fn install(state: &GuiState) {
     wire_email_changed(state, &app);
     wire_step_navigation(state, &app);
     wire_oauth2_flow(state, &app);
+    wire_reauth_account(state, &app);
+}
+
+// ────────────────────── re-auth affordance (#27) ──────────────────────
+
+/// Re-auth affordance (#27): an account whose `OAuth2` refresh token was
+/// rejected lands in `ConnectionState::NeedsReauth`; the sidebar shows a
+/// `re-auth` badge for it (event-driven via `ForwardedEvent`) and clicking
+/// the badge restarts the browser flow with the account's own email —
+/// the same wizard path as first-time setup, minus the typing.
+fn wire_reauth_account(state: &GuiState, app: &crate::AppWindow) {
+    let h = state.handle.clone();
+    let w = app.as_weak();
+    let emails = Arc::clone(&state.account_emails_cache);
+    app.on_reauth_account(move |idx| {
+        let idx = usize::try_from(idx).unwrap_or(0);
+        let Some(email) = emails
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(idx)
+            .cloned()
+        else {
+            return;
+        };
+        let provider = detect_provider(&email);
+        if !provider_supports_oauth2(&provider) {
+            let w2 = w.clone();
+            slint::invoke_from_event_loop(move || {
+                if let Some(app) = w2.upgrade() {
+                    show_toast(
+                        &app,
+                        "re-authentication requires an OAuth2 provider; edit the account instead",
+                        "error",
+                    );
+                }
+            })
+            .ok();
+            return;
+        }
+        // Owned clones only: the `FnMut` closure can fire repeatedly.
+        start_oauth2_flow_for(h.clone(), w.clone(), &email, provider);
+    });
+}
+
+/// Starts an `OAuth2` browser flow for `email` outside the setup wizard UI:
+/// opens the browser, then reuses the wizard's completion watcher so the
+/// exchanged tokens land via `AddAccount` (the upsert-by-email path that
+/// repairs a `NeedsReauth` account).
+fn start_oauth2_flow_for(
+    handle: kestrel_engine::EngineHandle,
+    w: slint::Weak<crate::AppWindow>,
+    email: &str,
+    provider: kestrel_core::protocol::Provider,
+) {
+    let h = handle;
+    let email = email.to_owned();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async move {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = h
+                .commands
+                .send(Command {
+                    id: kestrel_core::ids::RequestId::from_uuid(uuid::Uuid::now_v7()),
+                    origin: FrontendKind::Gui,
+                    payload: CommandPayload::StartOAuth2Flow {
+                        provider: provider.clone(),
+                        reply: tx,
+                    },
+                })
+                .await;
+            match rx.await {
+                Ok(Reply::OAuthUrl(url)) => {
+                    if let Err(e) = open::that(&url) {
+                        tracing::warn!("failed to open browser: {e}");
+                    }
+                    let w_toast = w.clone();
+                    spawn_oauth2_completion_watcher(h, w, provider, email);
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(app) = w_toast.upgrade() {
+                            show_toast(
+                                &app,
+                                "Re-authentication: complete sign-in in your browser",
+                                "info",
+                            );
+                        }
+                    })
+                    .ok();
+                }
+                Ok(Reply::Err(e)) => {
+                    let msg = e.user_message();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(app) = w.upgrade() {
+                            show_toast(&app, &format!("re-auth failed: {msg}"), "error");
+                        }
+                    })
+                    .ok();
+                }
+                _ => {}
+            }
+        });
+    });
 }
 
 // ────────────────────── helpers ──────────────────────
@@ -112,6 +214,12 @@ async fn fetch_all_folders(state: &GuiState) -> Option<Vec<FolderId>> {
                 .map(|s| slint::SharedString::from(s.as_str()))
                 .collect();
             app.set_account_names(acct_strs.as_slice().into());
+            // Reset re-auth badges to the authoritative account states.
+            let reauth: Vec<bool> = accounts
+                .iter()
+                .map(|a| a.state == kestrel_core::protocol::ConnectionState::NeedsReauth)
+                .collect();
+            app.set_account_needs_reauth(reauth.as_slice().into());
             let colors: Vec<slint::Color> = acct_colors_clone
                 .iter()
                 .enumerate()
@@ -443,6 +551,15 @@ fn wire_add_account(state: &GuiState, app: &crate::AppWindow) {
                                     .map(|s| slint::SharedString::from(s.as_str()))
                                     .collect();
                                 app.set_account_names(acct_strs.as_slice().into());
+                                // Reset re-auth badges to the authoritative account states.
+                                let reauth: Vec<bool> = accts
+                                    .iter()
+                                    .map(|a| {
+                                        a.state
+                                            == kestrel_core::protocol::ConnectionState::NeedsReauth
+                                    })
+                                    .collect();
+                                app.set_account_needs_reauth(reauth.as_slice().into());
                                 let colors: Vec<slint::Color> = acct_emails_clone
                                     .iter()
                                     .enumerate()

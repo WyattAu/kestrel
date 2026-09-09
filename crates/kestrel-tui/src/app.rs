@@ -54,6 +54,10 @@ pub struct AppState {
     pub page: MessagePage,
     /// Preview of the selected message (if loaded).
     pub preview: Option<MessageView>,
+    /// Successful preview opens (monotonic; interaction gate #27 uses this
+    /// as a "the read step actually happened" signal that survives later
+    /// page refreshes, which clear `preview` by design).
+    pub preview_opens: u32,
     /// Selected account index.
     pub selected_account: usize,
     /// Selected folder index.
@@ -64,6 +68,9 @@ pub struct AppState {
     pub focus: Focus,
     /// Mode.
     pub mode: Mode,
+    /// Key→paint latency samples (µs), most recent last (phase-3 gate 4:
+    /// 16 ms per-interaction budget, sampled by the daily-loop journey gate).
+    pub key_latency_us: Vec<u64>,
     /// Search input buffer.
     pub search_input: String,
     /// Setup: email field.
@@ -117,10 +124,12 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            key_latency_us: Vec::new(),
             accounts: Vec::new(),
             folders: Vec::new(),
             page: MessagePage::default(),
             preview: None,
+            preview_opens: 0,
             selected_account: 0,
             selected_folder: 0,
             selected_message: 0,
@@ -260,6 +269,24 @@ impl AppState {
         if self.selected_folder >= self.folders.len() {
             self.selected_folder = self.folders.len().saturating_sub(1);
         }
+    }
+
+    /// Records one key→paint sample (µs) from the instant the key was
+    /// received (phase-3 gate 4).
+    pub fn record_key_latency(&mut self, received: std::time::Instant) {
+        self.key_latency_us
+            .push(u64::try_from(received.elapsed().as_micros()).unwrap_or(u64::MAX));
+    }
+
+    /// p50 key→paint latency in µs over the recorded samples.
+    #[must_use]
+    pub fn key_latency_p50_us(&self) -> Option<u64> {
+        if self.key_latency_us.is_empty() {
+            return None;
+        }
+        let mut v = self.key_latency_us.clone();
+        v.sort_unstable();
+        Some(v[v.len() / 2])
     }
 
     /// Replace the page, clamping the selection.

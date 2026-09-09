@@ -106,7 +106,7 @@ pub async fn run(
             }
         }
     });
-    spawn_input(tx.clone());
+    spawn_input(tx);
 
     let mut state = AppState {
         status: "Kestrel".into(),
@@ -122,37 +122,15 @@ pub async fn run(
         }
     }
 
-    loop {
-        terminal.draw(|f| {
-            ui::draw(f, &state);
-            ui::draw_modal(f, &state);
-            // First presented frame = time-to-interactive marker
-            // (phase-3 gate 1). Sticky: later draws don't overwrite it.
-            if let Some(probe) = sla_probe.as_deref_mut() {
-                probe.mark_first_frame();
-            }
-        })?;
-
-        // Poll with bounded wait (50 ms frame budget).
-        let ev = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
-        let Some(ev) = ev.ok().flatten() else {
-            continue;
-        };
-
-        match ev {
-            TermEvent::Key(key) => {
-                if handle_key(&handle, &mut state, key, &config).await {
-                    break;
-                }
-            }
-            TermEvent::Resize => {
-                terminal.autoresize()?;
-            }
-            TermEvent::Engine(ev) => {
-                handle_engine_event(&handle, &mut state, ev).await;
-            }
-        }
-    }
+    event_loop(
+        &handle,
+        &config,
+        &mut terminal,
+        &mut rx,
+        &mut state,
+        sla_probe.as_deref_mut(),
+    )
+    .await?;
 
     ratatui::restore();
     // SLA enforcement (phase-3 gate 1): the report is written at
@@ -164,6 +142,119 @@ pub async fn run(
         && std::env::var_os("KESTREL_SLA_ENFORCE").is_some()
     {
         return Err(std::io::Error::other(breach));
+    }
+    Ok(())
+}
+
+/// Test seam for the daily-loop journey gate: performs the same initial
+/// data load as [`run`] (accounts → folders → messages) on a caller-owned
+/// state. Public because the gate lives in an integration test.
+pub async fn test_refresh_all(handle: &EngineHandle, state: &mut AppState) {
+    refresh_accounts(handle, state).await;
+    if state.account().is_some() {
+        refresh_folders(handle, state).await;
+        if state.folder_id().is_some() {
+            refresh_messages(handle, state).await;
+        }
+    }
+}
+
+/// Test seam for the daily-loop journey gate: selects the folder with the
+/// given server name (case-insensitive) and refreshes its message list.
+/// Returns `false` when no such folder exists.
+pub async fn test_select_folder(
+    handle: &EngineHandle,
+    state: &mut AppState,
+    remote_name: &str,
+) -> bool {
+    let pos = state
+        .folders
+        .iter()
+        .position(|f| f.remote_name.eq_ignore_ascii_case(remote_name));
+    match pos {
+        Some(pos) => {
+            state.selected_folder = pos;
+            refresh_messages(handle, state).await;
+            true
+        }
+        None => false,
+    }
+}
+
+/// The transport-agnostic main loop: draw → poll → dispatch, until a key
+/// handler reports exit. Split from [`run`] so the daily-loop journey gate
+/// (roadmap phase 3, #27) can drive the *real* loop with scripted keys on a
+/// `ratatui::backend::TestBackend` and inspect `AppState` afterwards.
+///
+/// Key→paint latency (phase-3 gate 4): every key press is timestamped when
+/// received and the delta to the *next completed draw* is recorded in
+/// `AppState::key_latency_us` (µs). This includes the key's async handling
+/// (engine round-trips), which is the honest end-to-end interaction cost.
+///
+/// # Errors
+/// Returns `Err` when terminal draw/write fails (I/O backend error).
+pub async fn event_loop<B: ratatui::backend::Backend>(
+    handle: &EngineHandle,
+    config: &Arc<kestrel_core::config::Config>,
+    terminal: &mut ratatui::Terminal<B>,
+    rx: &mut mpsc::Receiver<TermEvent>,
+    state: &mut AppState,
+    mut sla_probe: Option<&mut crate::sla::ColdStartProbe>,
+) -> std::io::Result<()> {
+    let mut pending_key: Option<std::time::Instant> = None;
+    loop {
+        terminal
+            .draw(|f| {
+                ui::draw(f, state);
+                ui::draw_modal(f, state);
+                // First presented frame = time-to-interactive marker
+                // (phase-3 gate 1). Sticky: later draws don't overwrite it.
+                if let Some(probe) = sla_probe.as_deref_mut() {
+                    probe.mark_first_frame();
+                }
+            })
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+        // Key→paint (phase-3 gate 4): the draw above is the paint for the
+        // key we received before it.
+        if let Some(t0) = pending_key.take() {
+            state.record_key_latency(t0);
+        }
+
+        // Poll with bounded wait (50 ms frame budget).
+        let ev = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
+        let Some(ev) = ev.ok().flatten() else {
+            continue;
+        };
+
+        match ev {
+            TermEvent::Key(key) => {
+                // INVARIANT: monotonic wall-clock is the measurement here —
+                // key→paint latency is real user-perceived time (same class
+                // as the cold-start probe in `sla.rs`); the `Clock`
+                // abstraction exists for determinism of engine state and a
+                // sampler must not perturb it. Scoped `allow` at the audited
+                // site.
+                #[allow(clippy::disallowed_methods)]
+                let now = std::time::Instant::now();
+                pending_key = Some(now);
+                if handle_key(handle, state, key, config).await {
+                    break;
+                }
+            }
+            TermEvent::Resize => {
+                terminal
+                    .autoresize()
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+            }
+            TermEvent::Engine(ev) => {
+                handle_engine_event(handle, state, ev).await;
+            }
+        }
+    }
+    // Final paint of the pending key (loop exit path), for completeness.
+    if let Some(t0) = pending_key.take() {
+        state.record_key_latency(t0);
     }
     Ok(())
 }

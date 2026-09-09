@@ -122,6 +122,7 @@ fn main() {
     let ep = Arc::clone(&paths);
     let _engine_ready = Arc::new(AtomicBool::new(false));
     let unread_for_thread = Arc::clone(&unread_count);
+    let account_ids_for_events = Arc::clone(&account_ids_cache);
 
     std::thread::spawn(move || {
         rt.block_on(async move {
@@ -134,15 +135,17 @@ fn main() {
             };
             let _ = engine_tx.send(handle.clone());
             let mut events = handle.events();
+            let ids_for_events = Arc::clone(&account_ids_for_events);
             loop {
                 match events.recv().await {
                     Ok(ev) => {
                         let vp = Arc::clone(&vp2);
                         let unread = Arc::clone(&unread_for_thread);
+                        let ids = Arc::clone(&ids_for_events);
                         let fwd = ForwardedEvent(ev);
                         gui_weak
                             .upgrade_in_event_loop(move |app| {
-                                fwd.apply(&app, &vp, &unread);
+                                fwd.apply(&app, &vp, &unread, &ids);
                             })
                             .ok();
                     }

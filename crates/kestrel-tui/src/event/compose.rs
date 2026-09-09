@@ -105,8 +105,9 @@ pub(crate) async fn compose_reply(
             payload: CommandPayload::ComposeSubmit { draft, reply: tx },
         })
         .await;
-    if matches!(rx.await, Ok(Reply::Accepted)) {
-        state.status = "reply queued".into();
+    match rx.await {
+        Ok(Reply::Accepted) => state.status = "reply queued".into(),
+        other => state.status = format!("reply submit failed: {other:?}"),
     }
 }
 
@@ -333,6 +334,14 @@ pub(crate) fn run_editor(
     template: &str,
     config: &Arc<kestrel_core::config::Config>,
 ) -> std::io::Result<editor::EditorOutcome> {
+    // The suspend/resume cycle toggles raw mode + alternate screen on the
+    // real stdout; under a test harness (no TTY, e.g. the daily-loop gate
+    // driving a TestBackend) those ioctls fail, and a spawned editor child
+    // doesn't need the terminal suspended anyway. Skip suspension there.
+    use std::io::IsTerminal as _;
+    if !std::io::stdout().is_terminal() {
+        return editor::edit_draft(template, config.editor.command.as_deref());
+    }
     // Suspend → edit → resume (message-protocol §6).
     editor::suspend_terminal()?;
     let result = editor::edit_draft(template, config.editor.command.as_deref());

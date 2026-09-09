@@ -6,11 +6,16 @@ use kestrel_core::protocol::EngineEvent;
 #[cfg(feature = "tray")]
 use kestrel_core::protocol::{Command, CommandPayload, FrontendKind};
 use kestrel_gui::AppWindow;
+use slint::Model as _;
 
 use crate::util::show_toast;
 
 /// Wrapper that is `Send`-safe for the engine→GUI event-forwarding thread.
 pub(crate) struct ForwardedEvent(pub EngineEvent);
+
+/// Shared per-account id cache (index-aligned with the sidebar account
+/// list) used to place re-auth badges on the right row.
+pub(crate) type AccountIds = Arc<std::sync::Mutex<Vec<kestrel_core::ids::AccountId>>>;
 
 impl ForwardedEvent {
     /// Dispatch an engine event onto the Slint UI thread.
@@ -19,13 +24,15 @@ impl ForwardedEvent {
         app: &AppWindow,
         _vp: &crate::state::SharedViewportState,
         unread: &Arc<AtomicU32>,
+        account_ids: &AccountIds,
     ) {
         match self.0 {
             EngineEvent::EngineStarted { version, .. } => {
                 app.set_status_text(format!("Kestrel v{version} ready").into());
             }
-            EngineEvent::AccountConnection { state, .. } => {
+            EngineEvent::AccountConnection { account, state } => {
                 app.set_connection_state(format!("{state:?}").into());
+                update_reauth_badges(app, account, state, account_ids);
             }
             EngineEvent::MailArrived { summary, .. } => {
                 app.set_status_text(format!("{} new", summary.new).into());
@@ -77,6 +84,42 @@ impl ForwardedEvent {
             _ => {}
         }
     }
+}
+
+/// Keeps the sidebar `re-auth` badges in sync with the engine's account
+/// connection states (#27): a `NeedsReauth` account shows the badge; any
+/// other transition clears it. The affected row is resolved through the
+/// index-aligned account id cache; unknown accounts are ignored.
+fn update_reauth_badges(
+    app: &AppWindow,
+    account: kestrel_core::ids::AccountId,
+    state: kestrel_core::protocol::ConnectionState,
+    account_ids: &AccountIds,
+) {
+    let names = app.get_account_names();
+    let count = names.row_count();
+    let row = account_ids
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .position(|id| *id == account)
+        .filter(|r| *r < count);
+    let Some(row) = row else { return };
+    let needs = state == kestrel_core::protocol::ConnectionState::NeedsReauth;
+    let model = app.get_account_needs_reauth();
+    let mut flags: Vec<bool> = (0..count)
+        .map(|i| model.row_data(i).unwrap_or(false))
+        .collect();
+    if flags.len() < count {
+        flags.resize(count, false);
+    }
+    if flags.get(row) == Some(&needs) {
+        return;
+    }
+    if let Some(slot) = flags.get_mut(row) {
+        *slot = needs;
+    }
+    app.set_account_needs_reauth(flags.as_slice().into());
 }
 
 /// Set up the system tray icon with a context menu.

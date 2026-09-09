@@ -151,6 +151,21 @@ After triaging a crash:
   CI job `webview-isolation`; threat model §7 row T3) proves the `unshare -n`
   namespace actually removes the network before booting `kestrel-gui` headless
   inside it; it skips (loudly) where namespaces/xvfb are unavailable.
+- **Daily-loop journey gate** (phase-3 gates 2+4, #27):
+  `crates/kestrel-tui/tests/daily_loop.rs` drives the *real TUI event loop*
+  (`TestBackend` + scripted keys) through the daily journey against the
+  compose stack: account add via protocol → seeded IMAP delivery ingests →
+  preview opens → scripted-`$EDITOR` reply queues through the outbox →
+  SMTP → Sent APPEND → archive move lands **server-side** (the mutation
+  push path). The same run samples key→paint latency per interaction and
+  asserts the 16 ms p50 budget. Retry-hygiene clears INBOX/Archive/Sent
+  server-side at start, so nextest retries restart clean.
+- **Memory-under-load gate** (phase-3 gate 3, #27):
+  `crates/kestrel-engine/tests/memory_under_load.rs` ingests a synthetic
+  10k-message folder through the real storage+index pipeline, waits for
+  the pipeline to drain, and asserts idle RSS stays under the pre-load
+  baseline + 25 MB idle SLA (idle-after-load is the SLA; idle-after-empty
+  is trivial).
 
 ## 6. SLA benchmarks (engineering-standards §5 mapping)
 

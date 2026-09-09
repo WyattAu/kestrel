@@ -377,6 +377,18 @@ fn wire_remove_account(state: &GuiState, app: &crate::AppWindow) {
                                                     app.set_account_names(
                                                         acct_names.as_slice().into(),
                                                     );
+                                                    // Reset re-auth badges to the
+                                                    // authoritative account states.
+                                                    let reauth: Vec<bool> = accts
+                                                        .iter()
+                                                        .map(|a| {
+                                                            a.state
+                                                                == kestrel_core::protocol::ConnectionState::NeedsReauth
+                                                        })
+                                                        .collect();
+                                                    app.set_account_needs_reauth(
+                                                        reauth.as_slice().into(),
+                                                    );
                                                     let colors: Vec<slint::Color> = accts
                                                         .iter()
                                                         .enumerate()

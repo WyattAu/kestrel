@@ -122,6 +122,15 @@ IDLE wake, restart revalidation per ADR 0004).
     recorded in a `pending_ops` queue inside `data.db` and replayed
     FIFO on reconnect; conflicts resolved server-wins, re-synced, surfaced
     via `FlagsChanged`/`MessagesChanged`.
+- Online mutation push (phase-3, #27): local flag/move mutations are also
+  journaled per-message in a `push_queue` (cache.db, migration 0005) and
+  applied server-side at the start of the next sync cycle — UID `STORE`
+  for flags, UID `MOVE` for moves with COPYUID reconciliation. Enqueueing
+  a push op wakes the account's sync service (`TriggerSync` mechanism) so
+  the drain runs immediately; without it, a subsequent delta pass could
+  revert the user's mutation for up to a full IDLE window. This closes
+  the loop for the daily journey: read/reply/archive changes survive
+  re-sync and land on the server (proven by the gate-2 journey test).
 
 ## 7. SMTP submission
 

@@ -22,6 +22,7 @@ export component AppWindow inherits Window {
     in property <int> account-count: 0;
     in property <[string]> account-names: [];
     in property <[color]> account-colors: [];
+    in property <[bool]> account-needs-reauth: [];
     in property <int> selected-account-idx: 0;
     in property <bool> show-setup: true;
     in property <bool> setup-busy: false;
@@ -149,6 +150,9 @@ export component AppWindow inherits Window {
     callback prev-step;
     callback start-oauth2-flow;
     callback select-account(int);
+    // Re-auth affordance (#27): restart the OAuth2 flow for an account in
+    // the `NeedsReauth` state (row click on the badge).
+    callback reauth-account(int);
     callback select-folder(int);
     callback select-message(int);
     callback compose;
@@ -296,7 +300,25 @@ export component AppWindow inherits Window {
                                         border-radius: 4px;
                                         background: acct-idx < root.account-colors.length ? root.account-colors[acct-idx] : root.text-muted;
                                     }
-                                    Text { text: acct-name; color: acct-idx == root.selected-account-idx ? root.text-primary : root.text-secondary; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: acct-name; color: acct-idx == root.selected-account-idx ? root.text-primary : root.text-secondary; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                    if acct-idx < root.account-needs-reauth.length && root.account-needs-reauth[acct-idx] : Rectangle {
+                                        width: 44px;
+                                        height: 16px;
+                                        border-radius: 3px;
+                                        background: root.text-error;
+                                        TouchArea {
+                                            clicked => { root.reauth-account(acct-idx); }
+                                            mouse-cursor: pointer;
+                                        }
+                                        Text {
+                                            text: "re-auth";
+                                            color: white;
+                                            font-size: 9px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
                             Text { text: "Folders"; color: root.text-muted; font-size: 11px; font-weight: 700; }
