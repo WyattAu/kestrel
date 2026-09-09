@@ -1,0 +1,49 @@
+# Weekly soak gates (docs/roadmap.md phase-2 exit: "token refresh unattended
+# for 7 days"). The deterministic soak compresses the 7-day property into one
+# run; scheduling it weekly observes the property over real wall-clock too.
+# Secrets stay out of here by design (issue #25): the soak uses an in-process
+# mock identity provider, never live provider credentials.
+name: Weekly Soak
+on:
+  schedule:
+    - cron: '30 3 * * 0'
+  workflow_dispatch: {}
+jobs:
+  oauth-refresh-soak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # kestrel-crypto sits behind workspace deps that pull GUI libs; the
+      # -p selection keeps the build surface to the crypto crate + tests.
+      - name: OAuth2 refresh soak (7 simulated days, fault injection)
+        run: cargo nextest run --profile integration -p kestrel-crypto --test oauth_soak --run-ignored ignored-only
+        env:
+          KESTREL_INTEGRATION: "1"
+
+  docker-integration-soak:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev pkg-config
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Start integration services
+        run: docker compose -f tests/integration/docker-compose.yml up -d --wait
+      # The same suite CI runs per-push, observed weekly to catch
+      # environment/server-image drift (base image updates, cert rollovers).
+      - name: Full integration suite
+        run: cargo nextest run --profile integration --run-ignored ignored-only
+        env:
+          KESTREL_INTEGRATION: "1"
+      - name: Tear down services
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml down -v

@@ -531,8 +531,145 @@ impl SyncService {
                         .await;
                 }
             }
+        } else {
+            // Non-CONDSTORE fallback (issue #24): the server cannot report
+            // modseq deltas, so scan the cached UID range and diff FLAGS.
+            // O(messages) per pass (initial sync, poll cycles, and wake
+            // re-passes), bounded by the cached UID range and windowed at
+            // 500 UIDs per FETCH.
+            self.windowed_flag_scan(session, folder).await?;
         }
         Ok(())
+    }
+
+    /// Windowed flag scan for servers without CONDSTORE (issue #24):
+    /// `UID FETCH <range> (FLAGS)` over the cached UID range, diff against
+    /// stored flags, persist the diff, emit one event. Also covers
+    /// CONDSTORE folders before their first stored modseq (the CHANGEDSINCE
+    /// branch requires `folder.highest_modseq > 0`).
+    async fn windowed_flag_scan(
+        &self,
+        session: &mut ImapSession,
+        folder: &FolderRow,
+    ) -> SyncResult<()> {
+        let Some(max_stored) = self.storage.max_uid(folder.id).await.unwrap_or(None) else {
+            return Ok(()); // empty folder: nothing to scan
+        };
+        // One cache-local uid→(id, flags) pass up front: the scan body then
+        // never touches storage until it has a confirmed diff.
+        let mut stored: std::collections::HashMap<
+            u32,
+            (kestrel_core::ids::MessageId, Vec<CoreFlag>),
+        > = std::collections::HashMap::new();
+        let mut offset = 0u64;
+        loop {
+            let page = self
+                .storage
+                .list_messages(
+                    folder.id,
+                    kestrel_core::protocol::Window { offset, limit: 500 },
+                    kestrel_core::protocol::SortSpec {
+                        field: kestrel_core::protocol::SortField::Uid,
+                        dir: kestrel_core::protocol::SortDir::Asc,
+                    },
+                )
+                .await
+                .map_err(SyncError::from)?;
+            if page.items.is_empty() {
+                break;
+            }
+            for m in &page.items {
+                // Mirror the delta pass: system flags only — `parse_flag`
+                // drops keywords on the server side, so drop `Custom` here.
+                let flags: Vec<CoreFlag> = m
+                    .flags
+                    .iter()
+                    .filter(|f| !matches!(f, CoreFlag::Custom(_)))
+                    .cloned()
+                    .collect();
+                stored.insert(m.uid, (m.id, flags));
+            }
+            offset += page.items.len() as u64;
+            if offset >= page.total {
+                break;
+            }
+        }
+        let mut changed: Vec<kestrel_core::ids::MessageId> = Vec::new();
+        // Bounded windows of 500 UIDs, starting at 1 (UIDs are not
+        // contiguous; FETCH returns what exists in each range).
+        for start in (1..=max_stored).step_by(500) {
+            let end = (start + 499).min(max_stored);
+            let range = format!("{start}:{end}");
+            let sequence = imap_next::imap_types::sequence::SequenceSet::try_from(range.as_str())
+                .map_err(|e| SyncError::Protocol(format!("seq: {e:?}")))?;
+            let outcome = session
+                .execute(
+                    CommandBody::Fetch {
+                        sequence_set: sequence,
+                        macro_or_item_names: MacroOrItems::MessageDataItemNames(vec![
+                            MessageDataItemName::Flags,
+                        ]),
+                        uid: true,
+                        modifiers: vec![],
+                    },
+                    Duration::from_mins(2),
+                )
+                .await;
+            if let Ok(outcome) = outcome
+                && outcome.is_ok()
+            {
+                for data in &outcome.data {
+                    for u in Unsolicited::from_data(data) {
+                        if let Unsolicited::FetchFlags { uid, flags } = u {
+                            let core_flags: Vec<CoreFlag> =
+                                flags.iter().filter_map(|f| parse_flag(f)).collect();
+                            let Some((id, prev)) = stored.get(&uid) else {
+                                continue; // not yet ingested; ingest writes flags
+                            };
+                            if Self::flags_differ(prev, &core_flags) {
+                                let _ = self
+                                    .storage
+                                    .set_flags(vec![*id], FlagOp::Set(core_flags.clone()))
+                                    .await;
+                                changed.push(*id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !changed.is_empty() {
+            let _ = self
+                .bus
+                .send(EngineEvent::FlagsChanged { messages: changed })
+                .await;
+        }
+        Ok(())
+    }
+
+    /// True when the stored flags for a message differ from the server's
+    /// current set. Unknown messages (not yet ingested) return `false` to
+    /// avoid a spurious store; the ingest path writes server flags anyway.
+    fn flags_differ(stored: &[CoreFlag], current: &[CoreFlag]) -> bool {
+        // Compare as wire strings: `CoreFlag` carries a `Custom(String)`
+        // variant, so enum ordering is not meaningful.
+        fn wire(f: &CoreFlag) -> String {
+            match f {
+                CoreFlag::Seen => "\\Seen".to_string(),
+                CoreFlag::Answered => "\\Answered".to_string(),
+                CoreFlag::Flagged => "\\Flagged".to_string(),
+                CoreFlag::Deleted => "\\Deleted".to_string(),
+                CoreFlag::Draft => "\\Draft".to_string(),
+                CoreFlag::Custom(s) => s.clone(),
+            }
+        }
+        let normalize = |flags: &[CoreFlag]| -> Vec<String> {
+            let mut v: Vec<String> = flags.iter().map(wire).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        normalize(stored) != normalize(current)
     }
 
     async fn message_by_uid(

@@ -69,9 +69,13 @@ QRESYNC/CONDSTORE deltas (#23) — and the full integration suite (18 tests)
 is green. Writing them surfaced and fixed three production bugs: `ENABLE
 CONDSTORE/QRESYNC` was never sent (the delta path was dead code), flag
 deltas were emitted but never persisted, and `update_sync_cursors`
-clobbered stored `UIDVALIDITY` to 0, disabling reconciliation. Remaining
-for the phase-2 exit: the 7-day unattended token-refresh soak (#25) and the
-non-CONDSTORE flag-pass fallback (#24).
+clobbered stored `UIDVALIDITY` to 0, disabling reconciliation. The non-CONDSTORE flag-pass fallback (#24) is implemented and proven by a
+mock-server test (`crates/kestrel-sync/tests/mock_no_condstore.rs`), and
+the deterministic 7-day refresh soak (#25) runs weekly
+(`.github/workflows/soak-weekly.yml`). Remaining
+for the phase-2 exit: engine wiring of the unattended refresh worker
+(#26) — the worker and soak exist, but no production path calls the
+worker yet.
 
 ## Definition of "phase done"
 

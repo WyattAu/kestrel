@@ -133,6 +133,20 @@ After triaging a crash:
   `#[ignore]`d and prefixed `integration_` so the default profile never needs
   Docker (`--profile integration` runs them with retries; see
   `.config/nextest.toml`).
+- **Exit gates** (phase-2): `crates/kestrel-sync/tests/exit_gates.rs` proves
+  outbox restart-survival, `UIDVALIDITY` reconciliation, and CONDSTORE
+  flag-delta behavior against the compose stack;
+  `crates/kestrel-sync/tests/mock_no_condstore.rs` drives a real
+  `SyncService` against a minimal in-process mock IMAP server that never
+  advertises CONDSTORE, proving the windowed flag-scan fallback (no docker
+  needed, gated on `KESTREL_INTEGRATION` like the rest).
+- **OAuth2 refresh soak** (phase-2):
+  `crates/kestrel-crypto/tests/oauth_soak.rs` compresses the 7-day
+  unattended-refresh property into ~1s against a deterministic mock identity
+  provider with rotation persistence, transient-fault absorption (500/429),
+  and terminal `invalid_grant` classification; observed weekly by
+  `.github/workflows/soak-weekly.yml` together with the full integration
+  suite (no secrets — mock IdP only).
 - The GUI webview network-isolation test (`scripts/webview-netns-test.sh`,
   CI job `webview-isolation`; threat model §7 row T3) proves the `unshare -n`
   namespace actually removes the network before booting `kestrel-gui` headless

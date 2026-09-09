@@ -162,6 +162,99 @@ pub async fn refresh_access_token(
     )
 }
 
+/// Builds the provider preset from env-configurable `OAuth2` app
+/// credentials (the same sources `Router::start_oauth2_flow` uses).
+////// Shared by the interactive flow and the unattended refresh worker so
+/// both always talk to the same endpoint with the same client identity.
+///
+/// # Errors
+/// [`CryptoError::OAuth`] when the provider has no `OAuth2` preset.
+pub fn provider_from_env(
+    provider: &kestrel_core::protocol::Provider,
+) -> CryptoResult<MailProvider> {
+    let client_id =
+        std::env::var("KESTREL_OAUTH2_CLIENT_ID").unwrap_or_else(|_| "kestrel-desktop".into());
+    Ok(match provider {
+        kestrel_core::protocol::Provider::Gmail => MailProvider::gmail(&client_id),
+        kestrel_core::protocol::Provider::Outlook => {
+            let tenant = std::env::var("KESTREL_OAUTH2_TENANT").unwrap_or_else(|_| "common".into());
+            MailProvider::outlook(&client_id, &tenant)
+        }
+        kestrel_core::protocol::Provider::Yahoo => MailProvider::yahoo(&client_id),
+        kestrel_core::protocol::Provider::Fastmail => MailProvider::fastmail(&client_id),
+        _ => {
+            return Err(CryptoError::OAuth(
+                "provider does not support OAuth2".into(),
+            ));
+        }
+    })
+}
+
+/// Outcome of one unattended refresh attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshOutcome {
+    /// Tokens refreshed and rotated credentials persisted.
+    Refreshed,
+    /// Transient failure (network, 5xx, 429): back off and retry; the
+    /// stored refresh token is still valid.
+    Transient,
+    /// The refresh token was rejected (revoked/expired): the account needs
+    /// interactive re-authentication. Retrying cannot succeed.
+    Rejected,
+}
+
+/// One unattended refresh cycle: read the stored refresh token, exchange
+/// it, persist rotation, and classify the outcome for the caller's
+/// backoff/reauth policy.
+///
+/// Classification (sync-engine.md §5): network/HTTP/JSON failures and 5xx
+/// or 429 statuses are [`RefreshOutcome::Transient`]; any other status is
+/// [`RefreshOutcome::Rejected`] (typically `invalid_grant`).
+///
+/// # Errors
+/// [`CryptoError::OAuth`] when the refresh token is missing from the
+/// credential store entirely (nothing to refresh). Transient and rejected
+/// refreshes are reported via the return value, not the error.
+pub async fn refresh_unattended(
+    http: &reqwest::Client,
+    provider: &MailProvider,
+    creds: &CredentialService,
+    account: kestrel_core::ids::AccountId,
+) -> CryptoResult<RefreshOutcome> {
+    let Some(refresh_token) = creds.refresh_token(account)? else {
+        return Err(CryptoError::OAuth(format!(
+            "no refresh token stored for account {account}"
+        )));
+    };
+    match oauth_toolkit::token::refresh(
+        http,
+        &provider.token_url,
+        &provider.client_id,
+        None,
+        refresh_token.expose(),
+    )
+    .await
+    {
+        Ok(set) => {
+            let tokens = secret_set(set);
+            // Rotation must persist: dropping it desynchronizes the
+            // keyring from the server's token lineage.
+            persist_refresh(creds, account, &tokens)?;
+            Ok(RefreshOutcome::Refreshed)
+        }
+        Err(
+            oauth_toolkit::token::TokenError::Http(_) | oauth_toolkit::token::TokenError::Json(_),
+        ) => Ok(RefreshOutcome::Transient),
+        Err(oauth_toolkit::token::TokenError::Status(status)) => {
+            if status.as_u16() == 429 || status.is_server_error() {
+                Ok(RefreshOutcome::Transient)
+            } else {
+                Ok(RefreshOutcome::Rejected)
+            }
+        }
+    }
+}
+
 /// Persists a token set's refresh token.
 ///
 /// # Errors
