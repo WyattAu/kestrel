@@ -38,10 +38,41 @@ pub struct SmtpParams {
     pub username: String,
     /// Password or OAuth token.
     pub secret: SecretString,
+    /// Optional live-token handoff shared with the IMAP connect params:
+    /// the engine's `OAuth2` refresh worker publishes refreshed access
+    /// tokens here so each submission authenticates with a fresh
+    /// credential. `None` for password accounts.
+    pub secret_override: Option<std::sync::Arc<std::sync::RwLock<Option<SecretString>>>>,
     /// Use XOAUTH2 (token) instead of PLAIN.
     pub oauth2: bool,
     /// Transport security mode.
     pub security: SmtpSecurity,
+}
+
+impl SmtpParams {
+    /// Shares a live-token cell with (e.g.) the account's IMAP params so
+    /// one refresh-worker update serves both protocols.
+    #[must_use]
+    pub fn with_secret_cell(
+        mut self,
+        cell: std::sync::Arc<std::sync::RwLock<Option<SecretString>>>,
+    ) -> Self {
+        self.secret_override = Some(cell);
+        self
+    }
+
+    /// The credential to submit with right now: the live override when
+    /// set (refresh worker), else the static secret.
+    fn current_secret(&self) -> SecretString {
+        match &self.secret_override {
+            Some(cell) => cell
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap_or_else(|| self.secret.clone()),
+            None => self.secret.clone(),
+        }
+    }
 }
 
 fn tls_err(host: &str) -> impl Fn(lettre::transport::smtp::Error) -> KestrelError + '_ {
@@ -68,7 +99,10 @@ fn build_transport(
     .port(params.port)
     .timeout(Some(Duration::from_mins(1)));
 
-    let creds = Credentials::new(params.username.clone(), params.secret.expose().to_owned());
+    let creds = Credentials::new(
+        params.username.clone(),
+        params.current_secret().expose().to_owned(),
+    );
     let mechanism = if params.oauth2 {
         vec![Mechanism::Xoauth2]
     } else {

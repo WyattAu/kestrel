@@ -77,6 +77,8 @@ fn draw_folder_pane(f: &mut Frame<'_>, state: &AppState, area: Rect) {
                 kestrel_core::protocol::ConnectionState::Idle
                 | kestrel_core::protocol::ConnectionState::Syncing => Color::Green,
                 kestrel_core::protocol::ConnectionState::OfflineMode => Color::Yellow,
+                // Re-authentication required: prominent, actionable.
+                kestrel_core::protocol::ConnectionState::NeedsReauth => Color::Red,
                 _ => Color::Gray,
             });
         let indicator = if i == state.selected_account {

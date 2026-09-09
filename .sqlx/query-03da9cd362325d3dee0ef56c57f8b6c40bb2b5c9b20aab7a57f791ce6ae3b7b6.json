@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name, email, provider, protocol, sync_state, host FROM accounts ORDER BY created_at",
+  "query": "SELECT id, name, email, provider, protocol, sync_state, host, auth_kind FROM accounts ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -79,6 +79,17 @@
             "name": "host"
           }
         }
+      },
+      {
+        "name": "auth_kind",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "accounts",
+            "name": "auth_kind"
+          }
+        }
       }
     ],
     "parameters": {
@@ -91,8 +102,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "71ed06bdeb36be3182b804e58a9491e612ee64ec7a47b8b1e0249384474d7179"
+  "hash": "03da9cd362325d3dee0ef56c57f8b6c40bb2b5c9b20aab7a57f791ce6ae3b7b6"
 }

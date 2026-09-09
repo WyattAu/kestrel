@@ -593,6 +593,14 @@ impl EngineRouter {
         self.creds
             .set_password(account_id, &password)
             .map_err(KestrelError::from)?;
+        // OAuth2 accounts: the same secret seeds the refresh-token slot
+        // the unattended worker reads (#26). After a `CompleteOAuth2Flow`
+        // exchange, that flow's real refresh token replaces it.
+        if config.auth_kind == "oauth2" {
+            self.creds
+                .set_refresh_token(account_id, &password)
+                .map_err(KestrelError::from)?;
+        }
 
         // 3. Start the per-account services under the supervisor (shared
         // lifecycle with UpdateAccount and startup resume; accounts.rs).
@@ -678,6 +686,7 @@ impl EngineRouter {
                 .clone()
                 .unwrap_or_else(|| config.email.clone()),
             secret: password.clone(),
+            secret_override: None,
             mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
             tls: tokio_rustls::TlsConnector::from(
                 kestrel_crypto::tls_config(None).map_err(KestrelError::from)?,
@@ -754,6 +763,7 @@ impl EngineRouter {
                 security,
                 username: username.clone(),
                 secret: password.clone(),
+                secret_override: None,
                 mechanisms,
                 tls: tls.clone(),
                 sasl_factory: sasl_factory.clone(),
@@ -763,6 +773,7 @@ impl EngineRouter {
                 port: config.smtp_port,
                 username: username.clone(),
                 secret: password.clone(),
+                secret_override: None,
                 oauth2: config.auth_kind == "oauth2",
                 security: match config.smtp_security.as_str() {
                     "starttls" => kestrel_sync::SmtpSecurity::StartTls,
@@ -776,6 +787,7 @@ impl EngineRouter {
                 security,
                 username,
                 secret: password,
+                secret_override: None,
                 mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
                 tls,
                 sasl_factory,
@@ -785,6 +797,9 @@ impl EngineRouter {
 
         let spec = AccountServicesSpec {
             account: account_id,
+            provider: config.provider.clone(),
+            is_oauth2: config.auth_kind == "oauth2",
+            creds: Arc::clone(&self.creds),
             jmap,
             imap,
             outbox,

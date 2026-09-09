@@ -137,7 +137,7 @@ async fn engine_boot_accounts_folders_messages_search_outbox() {
 
     // EngineStarted carries the protocol version.
     match events.recv().await {
-        Ok(EngineEvent::EngineStarted { version, .. }) => assert_eq!(version, 2),
+        Ok(EngineEvent::EngineStarted { version, .. }) => assert_eq!(version, 3),
         other => panic!("expected EngineStarted, got {other:?}"),
     }
 

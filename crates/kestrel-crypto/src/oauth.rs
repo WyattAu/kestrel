@@ -164,7 +164,11 @@ pub async fn refresh_access_token(
 
 /// Builds the provider preset from env-configurable `OAuth2` app
 /// credentials (the same sources `Router::start_oauth2_flow` uses).
-////// Shared by the interactive flow and the unattended refresh worker so
+///
+/// `KESTREL_OAUTH2_TOKEN_URL` overrides the token endpoint (with a generic
+/// preset construction), enabling self-hosted identity providers and
+/// hermetic fixtures.
+/// Shared by the interactive flow and the unattended refresh worker so
 /// both always talk to the same endpoint with the same client identity.
 ///
 /// # Errors
@@ -174,6 +178,22 @@ pub fn provider_from_env(
 ) -> CryptoResult<MailProvider> {
     let client_id =
         std::env::var("KESTREL_OAUTH2_CLIENT_ID").unwrap_or_else(|_| "kestrel-desktop".into());
+    if let Ok(token_url) = std::env::var("KESTREL_OAUTH2_TOKEN_URL") {
+        return Ok(MailProvider {
+            auth_url: std::env::var("KESTREL_OAUTH2_AUTH_URL")
+                .unwrap_or_else(|_| token_url.clone()),
+            token_url,
+            client_id,
+            imap_scopes: std::env::var("KESTREL_OAUTH2_IMAP_SCOPES")
+                .map(|s| s.split(',').map(str::to_owned).collect())
+                .unwrap_or_default(),
+            smtp_scopes: Vec::new(),
+            extra_scopes: std::env::var("KESTREL_OAUTH2_EXTRA_SCOPES").map_or_else(
+                |_| vec!["offline_access".into()],
+                |s| s.split(',').map(str::to_owned).collect(),
+            ),
+        });
+    }
     Ok(match provider {
         kestrel_core::protocol::Provider::Gmail => MailProvider::gmail(&client_id),
         kestrel_core::protocol::Provider::Outlook => {
@@ -191,10 +211,14 @@ pub fn provider_from_env(
 }
 
 /// Outcome of one unattended refresh attempt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum RefreshOutcome {
     /// Tokens refreshed and rotated credentials persisted.
-    Refreshed,
+    Refreshed {
+        /// The new token set: `access_token` goes to the live-secret cell,
+        /// `expires_at` schedules the next refresh.
+        tokens: TokenSet,
+    },
     /// Transient failure (network, 5xx, 429): back off and retry; the
     /// stored refresh token is still valid.
     Transient,
@@ -240,7 +264,7 @@ pub async fn refresh_unattended(
             // Rotation must persist: dropping it desynchronizes the
             // keyring from the server's token lineage.
             persist_refresh(creds, account, &tokens)?;
-            Ok(RefreshOutcome::Refreshed)
+            Ok(RefreshOutcome::Refreshed { tokens })
         }
         Err(
             oauth_toolkit::token::TokenError::Http(_) | oauth_toolkit::token::TokenError::Json(_),
@@ -268,6 +292,141 @@ pub fn persist_refresh(
         creds.set_refresh_token(account, rt)?;
     }
     Ok(())
+}
+
+/// Builds the shared rustls-pinned HTTP client for `OAuth2` endpoint
+/// traffic (ADR 0016: rustls everywhere; plain-http only reaches loopback
+/// in fixtures).
+///
+/// # Errors
+/// [`CryptoError::OAuth`] when the client cannot be built (TLS backend
+/// initialization failure).
+pub fn shared_http_client() -> CryptoResult<std::sync::Arc<reqwest::Client>> {
+    Ok(std::sync::Arc::new(
+        reqwest::Client::builder()
+            .use_rustls_tls()
+            .build()
+            .map_err(|e| CryptoError::OAuth(format!("http client: {e}")))?,
+    ))
+}
+
+/// Tuning for [`refresh_worker`] (tests compress these).
+#[derive(Clone, Copy, Debug)]
+pub struct RefreshWorkerConfig {
+    /// Refresh this long before expiry.
+    pub refresh_skew: Duration,
+    /// Backoff base after a transient failure.
+    pub retry_base: Duration,
+    /// Backoff cap after repeated transient failures.
+    pub retry_max: Duration,
+}
+
+impl Default for RefreshWorkerConfig {
+    fn default() -> Self {
+        Self {
+            refresh_skew: Duration::from_mins(5),
+            retry_base: Duration::from_secs(30),
+            retry_max: Duration::from_mins(15),
+        }
+    }
+}
+
+/// Everything [`refresh_worker`] needs; bundles the arguments so the
+/// constructor stays readable.
+#[derive(Clone)]
+pub struct RefreshWorkerSpec {
+    /// Shared HTTP client (rustls-pinned per ADR 0016).
+    pub http: std::sync::Arc<reqwest::Client>,
+    /// Provider preset (token endpoint + client id).
+    pub provider: MailProvider,
+    /// Credential store backing the refresh token.
+    pub creds: std::sync::Arc<CredentialService>,
+    /// Owning account.
+    pub account: kestrel_core::ids::AccountId,
+    /// Time source for expiry scheduling.
+    pub clock: std::sync::Arc<dyn kestrel_core::clock::Clock>,
+    /// Live-token handoff (`ConnectParams`/`SmtpParams` `secret_override`).
+    pub secret_cell: std::sync::Arc<std::sync::RwLock<Option<SecretString>>>,
+    /// Expiry from a prior session's token; `None` refreshes immediately.
+    pub initial_expires_at: Option<i64>,
+    /// Timing tuning.
+    pub cfg: RefreshWorkerConfig,
+}
+
+/// Why the unattended refresh loop stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshWorkerOutcome {
+    /// The cancellation token fired (account removed / shutdown).
+    Cancelled,
+    /// The refresh token was rejected: interactive re-authentication is
+    /// required. The caller must surface
+    /// [`kestrel_core::protocol::ConnectionState::NeedsReauth`].
+    Rejected,
+}
+
+/// The unattended `OAuth2` refresh loop (`sync-engine.md` §5): sleeps until
+/// `expires_at - refresh_skew`, refreshes through [`refresh_unattended`],
+/// publishes the fresh access token into `secret_cell` (the
+/// `ConnectParams`/`SmtpParams` live-token handoff), and retries transient
+/// failures with capped exponential backoff. Runs until cancelled or the
+/// token is rejected.
+///
+/// With `initial_expires_at` (`Some`, from a prior session's token) the
+/// first sleep honors it; `None` refreshes immediately (a stored refresh
+/// token with no known expiry).
+pub async fn refresh_worker(
+    spec: RefreshWorkerSpec,
+    cancel: tokio_util::sync::CancellationToken,
+) -> RefreshWorkerOutcome {
+    let RefreshWorkerSpec {
+        http,
+        provider,
+        creds,
+        account,
+        clock,
+        secret_cell,
+        initial_expires_at,
+        cfg,
+    } = spec;
+    let mut expires_at = initial_expires_at;
+    let mut transient_streak: u32 = 0;
+    loop {
+        // Sleep until the refresh window opens (immediately when the
+        // expiry is unknown).
+        let now = clock.now_unix_ms();
+        let skew_ms = i64::try_from(cfg.refresh_skew.as_millis()).unwrap_or(i64::MAX);
+        let wake_in = expires_at.map_or(Duration::ZERO, |exp| {
+            let delay_ms = (exp - skew_ms).saturating_sub(now);
+            Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0))
+        });
+        tokio::select! {
+            () = cancel.cancelled() => return RefreshWorkerOutcome::Cancelled,
+            () = tokio::time::sleep(wake_in) => {}
+        }
+        match refresh_unattended(&http, &provider, &creds, account).await {
+            Ok(RefreshOutcome::Refreshed { tokens }) => {
+                transient_streak = 0;
+                *secret_cell
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tokens.access_token);
+                expires_at = Some(tokens.expires_at);
+            }
+            Ok(RefreshOutcome::Transient) => {
+                transient_streak = transient_streak.saturating_add(1);
+                let shift = transient_streak.saturating_sub(1).min(16);
+                let wait = cfg
+                    .retry_base
+                    .checked_mul(1u32 << shift)
+                    .unwrap_or(cfg.retry_max)
+                    .min(cfg.retry_max);
+                tokio::select! {
+                    () = cancel.cancelled() => return RefreshWorkerOutcome::Cancelled,
+                    () = tokio::time::sleep(wait) => {}
+                }
+            }
+            Ok(RefreshOutcome::Rejected) | Err(_) => return RefreshWorkerOutcome::Rejected,
+        }
+    }
 }
 
 #[cfg(test)]

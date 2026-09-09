@@ -54,6 +54,7 @@ fn connect_params() -> ConnectParams {
         security: Security::Insecure,
         username: USERNAME.into(),
         secret: SecretString::new(PASSWORD.into()),
+        secret_override: None,
         mechanisms: vec![SaslMechanism::Plain],
         tls: TlsConnector::from(test_tls_config()),
         sasl_factory: Arc::new(|mech, user, secret| {
@@ -68,6 +69,7 @@ fn smtp_params() -> SmtpParams {
         port: SMTP_PORT,
         username: USERNAME.into(),
         secret: SecretString::new(PASSWORD.into()),
+        secret_override: None,
         oauth2: false,
         security: SmtpSecurity::Insecure,
     }
@@ -425,6 +427,7 @@ async fn integration_e2e_lifecycle() {
         security: Security::Insecure,
         username: "sender@example.org".into(),
         secret: SecretString::new("anypassword".into()),
+        secret_override: None,
         mechanisms: vec![SaslMechanism::Plain],
         tls: TlsConnector::from(test_tls_config()),
         sasl_factory: Arc::new(|mech, user, secret| {

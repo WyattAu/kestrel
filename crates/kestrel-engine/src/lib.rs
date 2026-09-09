@@ -351,7 +351,7 @@ impl Engine {
 #[allow(clippy::too_many_lines)]
 fn startup_spec_for(
     acct: &kestrel_core::protocol::AccountSummary,
-    creds: &kestrel_crypto::CredentialService,
+    creds: &std::sync::Arc<kestrel_crypto::CredentialService>,
     storage: &StorageHandle,
     clock: &Arc<dyn Clock>,
     cfg: Arc<Config>,
@@ -415,6 +415,7 @@ fn startup_spec_for(
                 .clone()
                 .unwrap_or_else(|| preset.email.clone()),
             secret: secret.clone(),
+            secret_override: None,
             mechanisms,
             tls: tls.clone(),
             sasl_factory: sasl_factory.clone(),
@@ -430,6 +431,7 @@ fn startup_spec_for(
                 .clone()
                 .unwrap_or_else(|| preset.email.clone()),
             secret: secret.clone(),
+            secret_override: None,
             oauth2: preset.auth_kind == "oauth2",
             security: match preset.smtp_security.as_str() {
                 "starttls" => kestrel_sync::SmtpSecurity::StartTls,
@@ -445,6 +447,7 @@ fn startup_spec_for(
                 .clone()
                 .unwrap_or_else(|| preset.email.clone()),
             secret: secret.clone(),
+            secret_override: None,
             mechanisms: vec![kestrel_core::sasl::SaslMechanism::Plain],
             tls,
             sasl_factory,
@@ -456,6 +459,9 @@ fn startup_spec_for(
 
     Some(accounts::AccountServicesSpec {
         account: acct.id,
+        provider: acct.provider.clone(),
+        is_oauth2: acct.auth_kind == "oauth2",
+        creds: std::sync::Arc::clone(creds),
         jmap: if is_jmap {
             Some((acct.host.clone(), secret.clone()))
         } else {

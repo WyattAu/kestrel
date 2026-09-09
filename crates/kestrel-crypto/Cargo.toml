@@ -41,6 +41,8 @@ sequoia-openpgp = { version = "2.4", default-features = false, features = ["cryp
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # OAuth2 flows (PKCE/loopback/token/provider presets) — extracted crate.
 oauth-toolkit = { workspace = true }
+# Refresh-worker cancellation (shared token with the engine supervisor).
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [features]
 # Builds OpenSSL from source (openssl-src) so openssl-sys needs no system

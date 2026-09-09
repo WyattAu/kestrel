@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Protocol major version, emitted in `EngineStarted`.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Which frontend originated a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,6 +511,10 @@ pub enum ConnectionState {
     Idle,
     /// User-requested offline mode.
     OfflineMode,
+    /// `OAuth2` refresh token was rejected: interactive re-authentication is
+    /// required before the account can reconnect. Sync services stop
+    /// retrying; the frontend offers a re-auth affordance.
+    NeedsReauth,
 }
 
 /// Identifies a supervised service (ADR 0004).
@@ -751,6 +755,10 @@ pub struct AccountSummary {
     pub state: ConnectionState,
     /// IMAP/JMAP host.
     pub host: String,
+    /// Credential kind: `"password"` or `"oauth2"` (drives the engine's
+    /// unattended refresh worker). Defaulted for wire compatibility.
+    #[serde(default)]
+    pub auth_kind: String,
     /// UI accent color (hex, e.g. "#f38ba8").
     #[serde(default)]
     pub color: Option<String>,
@@ -1134,8 +1142,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protocol_version_is_two() {
-        assert_eq!(PROTOCOL_VERSION, 2);
+    fn protocol_version_is_three() {
+        assert_eq!(PROTOCOL_VERSION, 3);
     }
 
     #[test]

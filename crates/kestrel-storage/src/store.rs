@@ -948,6 +948,7 @@ fn state_wire(state: kestrel_core::protocol::ConnectionState) -> String {
         C::Syncing => "syncing",
         C::Idle => "idle",
         C::OfflineMode => "offline",
+        C::NeedsReauth => "needs_reauth",
     }
     .to_string()
 }

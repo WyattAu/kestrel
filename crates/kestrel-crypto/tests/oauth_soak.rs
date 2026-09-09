@@ -58,8 +58,19 @@ struct IdpState {
     fail_429_remaining: AtomicU32,
     /// When set, every refresh is rejected (revoked/rotated-out token).
     reject_refresh: AtomicBool,
+    /// Access-token TTL in seconds (compressed by the worker test).
+    expires_in: AtomicU32,
     /// Every access token handed out (uniqueness assertion).
     access_tokens: Mutex<Vec<String>>,
+}
+
+impl IdpState {
+    fn new(expires_in: u32) -> Self {
+        Self {
+            expires_in: AtomicU32::new(expires_in),
+            ..Self::default()
+        }
+    }
 }
 
 impl IdpState {
@@ -83,10 +94,11 @@ impl IdpState {
         let access = format!("access_day_{n}");
         self.access_tokens.lock().unwrap().push(access.clone());
         let refresh = format!("refresh_day_{n}");
+        let ttl = self.expires_in.load(Ordering::SeqCst);
         (
             200,
             format!(
-                r#"{{"access_token":"{access}","token_type":"Bearer","expires_in":86400,"refresh_token":"{refresh}"}}"#
+                r#"{{"access_token":"{access}","token_type":"Bearer","expires_in":{ttl},"refresh_token":"{refresh}"}}"#
             ),
         )
     }
@@ -168,7 +180,7 @@ async fn simulated_day(
     let mut transient_attempts = 0u32;
     for _ in 0..10 {
         match oauth::refresh_unattended(http, provider, creds, account).await {
-            Ok(outcome @ (RefreshOutcome::Refreshed | RefreshOutcome::Rejected)) => {
+            Ok(outcome @ (RefreshOutcome::Refreshed { .. } | RefreshOutcome::Rejected)) => {
                 return (outcome, transient_attempts);
             }
             Ok(RefreshOutcome::Transient) => {
@@ -189,7 +201,7 @@ async fn integration_oauth_refresh_survives_seven_simulated_days_with_faults() {
         return;
     }
 
-    let idp = Arc::new(IdpState::default());
+    let idp = Arc::new(IdpState::new(86_400));
     let (addr, server) = spawn_idp(idp.clone()).await;
     let provider = provider_for(addr);
 
@@ -216,7 +228,10 @@ async fn integration_oauth_refresh_survives_seven_simulated_days_with_faults() {
         }
 
         let (outcome, transient) = simulated_day(&http, &provider, &creds, account).await;
-        assert_eq!(outcome, RefreshOutcome::Refreshed, "day {day} must refresh");
+        assert!(
+            matches!(outcome, RefreshOutcome::Refreshed { .. }),
+            "day {day} must refresh, got {outcome:?}"
+        );
         total_transient += transient;
 
         // Rotation persisted: the stored token must differ from yesterday's.
@@ -256,9 +271,106 @@ async fn integration_oauth_refresh_survives_seven_simulated_days_with_faults() {
     // account needs interactive re-auth, not endless retry.
     idp.reject_refresh.store(true, Ordering::SeqCst);
     let (outcome, transient) = simulated_day(&http, &provider, &creds, account).await;
-    assert_eq!(outcome, RefreshOutcome::Rejected);
+    assert!(
+        matches!(outcome, RefreshOutcome::Rejected),
+        "revocation must classify as Rejected, got {outcome:?}"
+    );
     assert_eq!(transient, 0, "rejection is terminal, not transient");
 
     server.abort();
     eprintln!("soak ledger: {:?}", day_outcomes.join(" "));
+}
+
+/// Exit gate for #26 (worker level): the unattended worker loop survives
+/// rapid token expiry — 4 consecutive expiry/refresh cycles against a
+/// mock identity provider with seconds-long TTLs — publishing every fresh
+/// access token into the shared secret cell, and stopping cleanly with
+/// `Rejected` (not a crash, not a restart loop) once the provider revokes
+/// the lineage.
+#[tokio::test]
+#[ignore = "KESTREL_INTEGRATION=1 (exit gate; deterministic, docker-free)"]
+async fn integration_refresh_worker_survives_rapid_expiry_cycles() {
+    use std::sync::RwLock;
+
+    use kestrel_core::clock::SystemClock;
+    use kestrel_crypto::oauth::{
+        RefreshWorkerConfig, RefreshWorkerOutcome, RefreshWorkerSpec, refresh_worker,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    if std::env::var("KESTREL_INTEGRATION").is_err() {
+        return;
+    }
+
+    // TTL 2s, skew 250ms: the worker wakes ~1.75s after each refresh.
+    let idp = Arc::new(IdpState::new(2));
+    let (addr, server) = spawn_idp(idp.clone()).await;
+    let provider = provider_for(addr);
+    let creds = Arc::new(CredentialService::new(Arc::new(InMemoryStore::default())));
+    let account = AccountId::from_uuid(uuid::Uuid::now_v7());
+    creds
+        .set_refresh_token(account, &SecretString::new("refresh_seed".into()))
+        .unwrap();
+
+    let secret_cell = Arc::new(RwLock::new(None::<SecretString>));
+    let spec = RefreshWorkerSpec {
+        http: oauth::shared_http_client().unwrap(),
+        provider,
+        creds: Arc::clone(&creds),
+        account,
+        clock: Arc::new(SystemClock),
+        secret_cell: Arc::clone(&secret_cell),
+        initial_expires_at: None, // refresh immediately (first boot)
+        cfg: RefreshWorkerConfig {
+            refresh_skew: Duration::from_millis(250),
+            retry_base: Duration::from_millis(50),
+            retry_max: Duration::from_millis(500),
+        },
+    };
+
+    let worker = tokio::spawn(refresh_worker(spec, CancellationToken::new()));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    // The first refresh is immediate; each subsequent one lands ~TTL-skew
+    // later. Wait for 4 distinct tokens in the cell's history.
+    loop {
+        let n = idp.refresh_count.load(Ordering::SeqCst);
+        if n >= 4 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "worker never completed 4 refresh cycles (ledger: {n})"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // Cell received the latest access token (handoff works).
+    let current = secret_cell
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|t| t.expose().to_owned());
+    let (ledger_len, ledger_last) = {
+        let ledger = idp.access_tokens.lock().unwrap();
+        (ledger.len(), ledger.last().cloned())
+    };
+    assert!(ledger_len >= 4);
+    assert_eq!(
+        current.as_deref(),
+        ledger_last.as_deref(),
+        "cell must hold the latest access token"
+    );
+
+    // Revoke: the worker must terminate with `Rejected` promptly.
+    idp.reject_refresh.store(true, Ordering::SeqCst);
+    let outcome = tokio::time::timeout(Duration::from_secs(10), worker)
+        .await
+        .expect("worker hung after rejection")
+        .expect("worker panicked");
+    assert_eq!(outcome, RefreshWorkerOutcome::Rejected);
+
+    server.abort();
+    eprintln!(
+        "worker ledger: {} refreshes, cell handoff verified",
+        idp.refresh_count.load(Ordering::SeqCst)
+    );
 }

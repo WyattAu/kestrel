@@ -150,10 +150,11 @@ impl Store {
             protocol: String,
             sync_state: String,
             host: String,
+            auth_kind: String,
         }
         let rows = sqlx::query_as!(
             AccountRow,
-            "SELECT id, name, email, provider, protocol, sync_state, host FROM accounts ORDER BY created_at"
+            "SELECT id, name, email, provider, protocol, sync_state, host, auth_kind FROM accounts ORDER BY created_at"
         )
         .fetch_all(&self.db.data.read)
         .await?;
@@ -167,6 +168,7 @@ impl Store {
                      protocol,
                      sync_state,
                      host,
+                     auth_kind,
                  }| {
                     Ok(kestrel_core::protocol::AccountSummary {
                         id: parse_id::<AccountId>(&id)?,
@@ -176,6 +178,7 @@ impl Store {
                         protocol: protocol_parse(&protocol),
                         state: state_parse(&sync_state),
                         host,
+                        auth_kind,
                         color: None,
                     })
                 },
@@ -490,6 +493,7 @@ pub(crate) fn state_parse(s: &str) -> ConnectionState {
         "syncing" => ConnectionState::Syncing,
         "idle" => ConnectionState::Idle,
         "offline" => ConnectionState::OfflineMode,
+        "needs_reauth" => ConnectionState::NeedsReauth,
         _ => ConnectionState::Disconnected,
     }
 }

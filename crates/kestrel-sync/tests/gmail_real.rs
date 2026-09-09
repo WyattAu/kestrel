@@ -50,6 +50,7 @@ fn build_connect_params(access_token: &str, email: &str) -> ConnectParams {
         security: Security::Tls,
         username: email.into(),
         secret: SecretString::new(access_token.into()),
+        secret_override: None,
         mechanisms: vec![SaslMechanism::Xoauth2, SaslMechanism::Plain],
         tls: tokio_rustls::TlsConnector::from(tls_connector()),
         sasl_factory: Arc::new(|mech, user, secret| {
@@ -231,6 +232,7 @@ async fn gmail_real_password_imap() {
         security: Security::Tls,
         username: email.clone(),
         secret: SecretString::new(password),
+        secret_override: None,
         mechanisms: vec![SaslMechanism::Plain, SaslMechanism::Login],
         tls: tokio_rustls::TlsConnector::from(tls_connector()),
         sasl_factory: Arc::new(|mech, user, secret| {

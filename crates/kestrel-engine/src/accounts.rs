@@ -14,7 +14,7 @@ use kestrel_core::{
     clock::Clock,
     config::Config,
     ids::AccountId,
-    protocol::{EngineEvent, ServiceId},
+    protocol::{ConnectionState, EngineEvent, ServiceId},
     secrets::SecretString,
     store_model::MailStore,
 };
@@ -69,6 +69,13 @@ pub(crate) async fn stop_account(
 /// Everything needed to start one account's background services.
 pub(crate) struct AccountServicesSpec {
     pub account: AccountId,
+    /// Provider family (resolves the `OAuth2` refresh-worker preset).
+    pub provider: kestrel_core::protocol::Provider,
+    /// `"oauth2"` when the account authenticates with `OAuth2` (drives the
+    /// unattended refresh worker).
+    pub is_oauth2: bool,
+    /// Credential store (shared with the refresh worker).
+    pub creds: Arc<kestrel_crypto::CredentialService>,
     /// JMAP sync (session URL host + bearer token) — `Some` for JMAP
     /// accounts.
     pub jmap: Option<(String, SecretString)>,
@@ -94,7 +101,18 @@ pub(crate) async fn start_account_services(
     engine_stop: CancellationToken,
     spec: AccountServicesSpec,
 ) -> AccountHandle {
-    let account = spec.account;
+    let AccountServicesSpec {
+        account,
+        provider,
+        is_oauth2,
+        creds,
+        jmap,
+        imap,
+        outbox,
+        store,
+        clock,
+        cfg,
+    } = spec;
     let cancel = engine_stop.child_token();
     let handle = AccountHandle {
         account,
@@ -103,41 +121,43 @@ pub(crate) async fn start_account_services(
     };
     replace_account(registry, handle.clone()).await;
 
-    let clock = Arc::clone(&spec.clock);
-
-    if let Some((host, token)) = spec.jmap {
-        let service = Arc::new(
-            JmapSyncService::new(
-                account,
-                host,
-                token,
-                Arc::clone(&spec.store),
-                Arc::clone(&clock),
-                bus_forwarder(&bus),
-            )
-            .with_trigger(Arc::clone(&handle.trigger)),
-        );
-        spawn_supervised(
-            ServiceId::Sync(account),
-            bus.clone(),
-            cancel.clone(),
-            move |attempt| {
-                let service = Arc::clone(&service);
-                async move {
-                    service.run(attempt).await;
-                    Ok(())
-                }
-            },
+    if let Some((host, token)) = jmap {
+        start_jmap_sync(
+            account,
+            host,
+            token,
+            Arc::clone(&store),
+            Arc::clone(&clock),
+            &bus,
+            &cancel,
+            &handle,
         );
     }
 
-    if let Some(connect) = spec.imap {
+    let mut smtp_cell: Option<Arc<std::sync::RwLock<Option<SecretString>>>> = None;
+    if let Some(connect) = imap {
+        // OAuth2 accounts get the unattended refresh worker (#26): it
+        // refreshes before expiry and publishes tokens into a shared cell
+        // both IMAP and SMTP read per connect/submit.
+        let (connect, secret_cell) = connect.with_shared_secret();
+        if is_oauth2 {
+            spawn_refresh_worker(
+                account,
+                provider,
+                secret_cell.clone(),
+                Arc::clone(&creds),
+                bus.clone(),
+                Arc::clone(&clock),
+                cancel.clone(),
+            );
+            smtp_cell = Some(secret_cell);
+        }
         let service = Arc::new(
             SyncService::new(
                 account,
                 connect,
-                Arc::clone(&spec.store),
-                Arc::clone(&spec.cfg),
+                Arc::clone(&store),
+                Arc::clone(&cfg),
                 Arc::clone(&clock),
                 bus_forwarder(&bus),
             )
@@ -159,28 +179,135 @@ pub(crate) async fn start_account_services(
         );
     }
 
-    if let Some((smtp, imap)) = spec.outbox {
-        let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let outbox = Arc::new(OutboxService::new(
-            Arc::clone(&spec.store),
-            smtp,
-            imap,
-            Arc::clone(&clock),
-            bus_forwarder(&bus),
-            online,
-        ));
-        spawn_supervised(ServiceId::Outbox, bus.clone(), cancel, move |attempt| {
-            let service = Arc::clone(&outbox);
-            let span = tracing::info_span!("outbox", account = %account);
+    if let Some((smtp, imap)) = outbox {
+        start_outbox_flusher(account, smtp, imap, smtp_cell, store, clock, &bus, cancel);
+    }
+
+    handle
+}
+
+/// Starts the JMAP sync service for one account.
+#[allow(clippy::too_many_arguments)]
+fn start_jmap_sync(
+    account: AccountId,
+    host: String,
+    token: SecretString,
+    store: Arc<dyn MailStore>,
+    clock: Arc<dyn Clock>,
+    bus: &EventBus,
+    cancel: &CancellationToken,
+    handle: &AccountHandle,
+) {
+    let service = Arc::new(
+        JmapSyncService::new(account, host, token, store, clock, bus_forwarder(bus))
+            .with_trigger(Arc::clone(&handle.trigger)),
+    );
+    spawn_supervised(
+        ServiceId::Sync(account),
+        bus.clone(),
+        cancel.clone(),
+        move |attempt| {
+            let service = Arc::clone(&service);
             async move {
                 service.run(attempt).await;
                 Ok(())
             }
-            .instrument(span)
-        });
-    }
+        },
+    );
+}
 
-    handle
+/// Starts the outbox flusher for one account. A shared secret cell (only
+/// present for `OAuth2` accounts, where the refresh worker publishes fresh
+/// tokens) is attached to the SMTP params so submissions authenticate with
+/// the current access token.
+#[allow(clippy::too_many_arguments)]
+fn start_outbox_flusher(
+    account: AccountId,
+    smtp: SmtpParams,
+    imap: ConnectParams,
+    smtp_cell: Option<Arc<std::sync::RwLock<Option<SecretString>>>>,
+    store: Arc<dyn MailStore>,
+    clock: Arc<dyn Clock>,
+    bus: &EventBus,
+    cancel: CancellationToken,
+) {
+    let smtp = match smtp_cell {
+        Some(cell) => smtp.with_secret_cell(cell),
+        None => smtp,
+    };
+    let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let outbox = Arc::new(OutboxService::new(
+        store,
+        smtp,
+        imap,
+        clock,
+        bus_forwarder(bus),
+        online,
+    ));
+    spawn_supervised(ServiceId::Outbox, bus.clone(), cancel, move |attempt| {
+        let service = Arc::clone(&outbox);
+        let span = tracing::info_span!("outbox", account = %account);
+        async move {
+            service.run(attempt).await;
+            Ok(())
+        }
+        .instrument(span)
+    });
+}
+
+/// Spawns the unattended `OAuth2` refresh worker for one account (#26).
+///
+/// Supervised like the other services, except a `Rejected` refresh is
+/// terminal-by-design: the worker emits `NeedsReauth` and stops cleanly
+/// (`Ok(())`) instead of being restarted into a guaranteed-failure loop.
+fn spawn_refresh_worker(
+    account: AccountId,
+    provider: kestrel_core::protocol::Provider,
+    secret_cell: Arc<std::sync::RwLock<Option<SecretString>>>,
+    creds: Arc<kestrel_crypto::CredentialService>,
+    bus: EventBus,
+    clock: Arc<dyn Clock>,
+    stop: CancellationToken,
+) {
+    let spawned = tokio::spawn(async move {
+        // The worker's own token: a child of the account token, so
+        // RemoveAccount/shutdown stop it too.
+        let cancel = stop.child_token();
+        let spec = kestrel_crypto::oauth::RefreshWorkerSpec {
+            http: match kestrel_crypto::oauth::shared_http_client() {
+                Ok(http) => http,
+                Err(e) => {
+                    tracing::error!(account = %account, error = %e, "refresh worker: http client");
+                    return;
+                }
+            },
+            provider: match kestrel_crypto::oauth::provider_from_env(&provider) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(account = %account, error = %e, "refresh worker: provider");
+                    return;
+                }
+            },
+            creds,
+            account,
+            clock,
+            secret_cell,
+            initial_expires_at: None,
+            cfg: kestrel_crypto::oauth::RefreshWorkerConfig::default(),
+        };
+        let outcome = kestrel_crypto::oauth::refresh_worker(spec, cancel).await;
+        if outcome == kestrel_crypto::oauth::RefreshWorkerOutcome::Rejected {
+            tracing::warn!(
+                account = %account,
+                "OAuth2 refresh token rejected: account needs re-authentication"
+            );
+            bus.publish(EngineEvent::AccountConnection {
+                account,
+                state: ConnectionState::NeedsReauth,
+            });
+        }
+    });
+    drop(spawned); // detached by design; supervision is via NeedsReauth, not restart
 }
 
 /// One mpsc→broadcast bridge task per spawned service. Services take an

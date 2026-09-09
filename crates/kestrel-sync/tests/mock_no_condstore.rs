@@ -218,6 +218,7 @@ fn connect_params(port: u16) -> ConnectParams {
         security: Security::Insecure,
         username: "kestrel".into(),
         secret: SecretString::new("testpass".into()),
+        secret_override: None,
         mechanisms: vec![SaslMechanism::Plain],
         tls: tokio_rustls::TlsConnector::from(kestrel_crypto::tls_config(None).unwrap()),
         sasl_factory: Arc::new(|mech, user, secret| {

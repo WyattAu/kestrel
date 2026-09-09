@@ -47,6 +47,7 @@ fn build_connect_params(host: &str, port: u16, email: &str, password: &str) -> C
         security: Security::Tls,
         username: email.into(),
         secret: SecretString::new(password.into()),
+        secret_override: None,
         mechanisms: vec![
             SaslMechanism::Plain,
             SaslMechanism::Login,

@@ -105,7 +105,8 @@ pub enum EngineEvent {
 
     // Connectivity
     AccountConnection { account: AccountId, state: ConnectionState },
-    // Disconnected | Connecting | Authenticating | Syncing | Idle | OfflineMode
+    // Disconnected | Connecting | Authenticating | Syncing | Idle |
+    // OfflineMode | NeedsReauth
 
     // Mailbox changes
     MailArrived { account: AccountId, folder: FolderId, summary: FolderDelta },
@@ -136,7 +137,7 @@ pub enum EngineEvent {
 ### 3.1 `ServiceId` registry
 
 `ServiceDegraded` events identify the failing service by `ServiceId`. Current
-registry (as of `PROTOCOL_VERSION 2`): `Storage`, `Index`,
+registry (as of `PROTOCOL_VERSION 3`): `Storage`, `Index`,
 `Search`, `Outbox`, `Credentials`, `Config`, `Sync(AccountId)`,
 `Filter`, `Snooze`, `Maintenance` (GC scheduler). Additions are additive
 enum variants (minor, per §7).

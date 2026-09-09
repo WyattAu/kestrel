@@ -72,10 +72,14 @@ deltas were emitted but never persisted, and `update_sync_cursors`
 clobbered stored `UIDVALIDITY` to 0, disabling reconciliation. The non-CONDSTORE flag-pass fallback (#24) is implemented and proven by a
 mock-server test (`crates/kestrel-sync/tests/mock_no_condstore.rs`), and
 the deterministic 7-day refresh soak (#25) runs weekly
-(`.github/workflows/soak-weekly.yml`). Remaining
-for the phase-2 exit: engine wiring of the unattended refresh worker
-(#26) — the worker and soak exist, but no production path calls the
-worker yet.
+(`.github/workflows/soak-weekly.yml`). The unattended refresh worker is
+now wired into the account lifecycle (#26): spawned per `oauth2` account,
+publishing fresh access tokens to IMAP/SMTP via a shared secret cell,
+surfacing revocation as `ConnectionState::NeedsReauth` (protocol v3),
+and proven end-to-end by `crates/kestrel-engine/tests/oauth_worker.rs`
+against a hermetic mock identity provider. Remaining for the phase-2
+exit: the OAuth2 flow-completion handler (`CompleteOAuth2Flow`) and UI
+re-auth affordances (tracked under #26's follow-ups).
 
 ## Definition of "phase done"
 

@@ -10,7 +10,7 @@
 use std::{
     collections::HashSet,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, RwLock},
     task::{Context, Poll},
     time::Duration,
 };
@@ -72,12 +72,55 @@ pub struct ConnectParams {
     pub username: String,
     /// Password / token (mechanism-dependent).
     pub secret: SecretString,
+    /// Optional live-token handoff: the engine's `OAuth2` refresh worker
+    /// shares its latest access token through this cell so each new sync
+    /// cycle authenticates with a fresh credential without rebuilding the
+    /// account's `ConnectParams`. `None` for password accounts.
+    pub secret_override: Option<Arc<RwLock<Option<SecretString>>>>,
     /// Preferred SASL mechanisms, in order (server-advertised intersected).
     pub mechanisms: Vec<SaslMechanism>,
     /// TLS connector.
     pub tls: TlsConnector,
     /// SASL session factory (from `kestrel-crypto`).
     pub sasl_factory: SaslFactory,
+}
+
+impl ConnectParams {
+    /// Builds params whose credential can be swapped live: returns the
+    /// params plus the shared cell the engine's `OAuth2` refresh worker
+    /// publishes refreshed access tokens into.
+    #[must_use]
+    pub fn with_shared_secret(mut self) -> (Self, Arc<RwLock<Option<SecretString>>>) {
+        let cell = Arc::new(RwLock::new(None::<SecretString>));
+        self.secret_override = Some(Arc::clone(&cell));
+        (self, cell)
+    }
+
+    /// Swaps the live credential for subsequent connect cycles. With no
+    /// shared cell (password accounts), the static secret is replaced.
+    pub fn override_secret(&mut self, token: SecretString) {
+        match &self.secret_override {
+            Some(cell) => {
+                *cell
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(token);
+            }
+            None => self.secret = token,
+        }
+    }
+
+    /// The credential to authenticate with right now: the live override
+    /// when set (refresh worker), else the static secret.
+    fn current_secret(&self) -> SecretString {
+        match &self.secret_override {
+            Some(cell) => cell
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .unwrap_or_else(|| self.secret.clone()),
+            None => self.secret.clone(),
+        }
+    }
 }
 
 /// Untagged server data routed to the sync engine.
@@ -576,7 +619,7 @@ impl ImapSession {
     async fn authenticate(&mut self, params: &ConnectParams) -> SyncResult<()> {
         let username = params.username.clone();
         let mechanisms = params.mechanisms.clone();
-        let secret = params.secret.clone();
+        let secret = params.current_secret();
         let factory = Arc::clone(&params.sasl_factory);
         for mechanism in mechanisms {
             let advertised = self.has_capability(&format!("AUTH={}", mechanism.name()));

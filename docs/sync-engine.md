@@ -155,4 +155,4 @@ IDLE wake, restart revalidation per ADR 0004).
 | 8 | Offline flag ops replay | mutate while offline | journal replayed FIFO; server-wins conflict surfaced |
 | 9 | Restart mid-sync (crash cut) | kill -9 between batches | resume from last committed cursor; no dup/partial rows |
 | 10 | Capability fallback (no CONDSTORE) | Dovecot config without QRESYNC | windowed scans; correctness equal |
-| 11 | Token refresh (OAuth2) | expiry clock advance | unattended refresh; no credential material in logs |
+| 11 | Token refresh (OAuth2) | expiry clock advance | unattended refresh via the per-account `refresh_worker` (`kestrel-crypto::oauth`), spawned by `start_account_services` for `auth_kind = "oauth2"` accounts; publishes fresh access tokens into the shared secret cell read by IMAP/SMTP per connect/submit; rejection emits `ConnectionState::NeedsReauth` (protocol v3) and stops retrying; no credential material in logs |
