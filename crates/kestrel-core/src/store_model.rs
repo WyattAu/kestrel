@@ -2,12 +2,15 @@
 //! [`MailStore`] trait that network engines consume. Implementation lives
 //! in `kestrel-storage`; the engine injects it — no lateral crate imports.
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     error::KestrelError,
     ids::{AccountId, BlobHash, FolderId, MessageId, OutboxId},
     mime::ParsedMessage,
     protocol::{
-        Address, FlagOp, FolderRole, FolderSummary, MessagePage, MessageView, SortSpec, Window,
+        Address, Flag, FlagOp, FolderRole, FolderSummary, MessagePage, MessageView, SortSpec,
+        Window,
     },
 };
 
@@ -241,6 +244,40 @@ pub trait MailStore: Send + Sync {
     /// # Errors
     /// Storage failure.
     async fn remove_snooze(&self, message: MessageId) -> Result<(), KestrelError>;
+
+    // ---- server-push queue (mutation push to the IMAP server) ----
+    /// Queues a mutation for server-side application (UID STORE / MOVE).
+    /// The sync engine drains it at the start of each sync cycle; without
+    /// it a locally-applied mutation never reaches the authoritative server
+    /// state and is silently reverted by the next delta sync.
+    /// # Errors
+    /// Storage failure.
+    async fn enqueue_push_op(
+        &self,
+        account: AccountId,
+        op_type: PushOpType,
+        payload: PushOpPayload,
+    ) -> Result<(), KestrelError>;
+    /// Looks up the local (folder, uid) snapshot for the given messages
+    /// (the coordinates a push op needs to target the server message).
+    /// # Errors
+    /// Storage failure.
+    async fn message_locations(
+        &self,
+        messages: Vec<MessageId>,
+    ) -> Result<Vec<(MessageId, FolderId, u32)>, KestrelError>;
+    /// Drains all queued push ops for an account, ordered FIFO.
+    /// # Errors
+    /// Storage failure.
+    async fn drain_push_queue(&self, account: AccountId) -> Result<Vec<PushOp>, KestrelError>;
+    /// Records a failed push attempt (retry counter + error note).
+    /// # Errors
+    /// Storage failure.
+    async fn mark_push_op_failed(&self, id: i64, error: &str) -> Result<(), KestrelError>;
+    /// Removes a push op after successful server application.
+    /// # Errors
+    /// Storage failure.
+    async fn remove_push_op(&self, id: i64) -> Result<(), KestrelError>;
 }
 
 /// A snooze entry returned by `get_due_snoozes`.
@@ -256,4 +293,77 @@ pub struct SnoozeEntry {
     pub folder: FolderId,
     /// When the snooze expires.
     pub snoozed_until: i64,
+}
+
+// ---- server-push queue (sync-engine.md §6 mutation push) --------------------
+
+/// Operation category of a queued server-push mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PushOpType {
+    /// Flag mutation (UID STORE).
+    Flag,
+    /// Move messages between folders (UID MOVE; COPY+EXPUNGE fallback).
+    Move,
+}
+
+impl std::fmt::Display for PushOpType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Flag => write!(f, "flag"),
+            Self::Move => write!(f, "move"),
+        }
+    }
+}
+
+/// Serializable per-message payload for a server-push mutation. Rows carry
+/// the local folder/UID snapshot captured at enqueue time so the drain can
+/// target the exact server messages; per-message rows keep UID
+/// reconciliation 1:1 and stop one bad row from poisoning a batch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PushOpPayload {
+    /// Flag operation on one message.
+    Flag {
+        /// Target message.
+        message: MessageId,
+        /// Folder the message lived in at enqueue time (server mailbox).
+        folder: FolderId,
+        /// Server UID at enqueue time.
+        uid: u32,
+        /// Flags to add.
+        add: Vec<Flag>,
+        /// Flags to remove.
+        remove: Vec<Flag>,
+    },
+    /// Move one message to another folder.
+    Move {
+        /// Target message.
+        message: MessageId,
+        /// Source folder (the server mailbox to SELECT).
+        from_folder: FolderId,
+        /// Server UID at enqueue time.
+        uid: u32,
+        /// Destination folder (the server mailbox to move into).
+        to_folder: FolderId,
+    },
+}
+
+/// A queued server-push operation.
+#[derive(Clone, Debug)]
+pub struct PushOp {
+    /// Row id.
+    pub id: i64,
+    /// Owning account.
+    pub account_id: AccountId,
+    /// Operation category.
+    pub op_type: PushOpType,
+    /// Serialized operation payload.
+    pub payload: PushOpPayload,
+    /// Creation timestamp (unix ms).
+    pub created_at: i64,
+    /// Drain attempts so far.
+    pub retry_count: u32,
+    /// Last drain error, if any.
+    pub last_error: Option<String>,
 }

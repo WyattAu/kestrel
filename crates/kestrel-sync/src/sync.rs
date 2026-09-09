@@ -19,7 +19,7 @@ use kestrel_core::{
     mime::{MimeParser as _, StalwartParser},
     protocol::{ConnectionState, EngineEvent, Flag as CoreFlag, FlagOp, FolderDelta, FolderRole},
     sanitizer::sanitize_terminal_text,
-    store_model::{FolderRow, IngestBatch, IngestMessage, MailStore, NewFolder},
+    store_model::{FolderRow, IngestBatch, IngestMessage, MailStore, NewFolder, PushOpPayload},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -117,11 +117,21 @@ impl SyncService {
     }
 
     /// One full cycle: connect → auth → hierarchy → delta → idle.
+    #[allow(clippy::too_many_lines)]
     async fn run_one_cycle(&self, cancel: &CancellationToken) -> SyncResult<()> {
         self.emit_state(ConnectionState::Connecting).await;
         let mut session = ImapSession::connect_and_authenticate(&self.params).await?;
         self.emit_state(ConnectionState::Authenticating).await; // completed by connect
         self.emit_state(ConnectionState::Syncing).await;
+
+        // Mutation push (sync-engine.md §6): apply locally-queued
+        // flag/move mutations to the server BEFORE the delta pass, so the
+        // subsequent delta sees the server's post-mutation state and the
+        // local cache is never reverted. With COPYUID (UIDPLUS) the new
+        // destination UIDs are reconciled into the cache directly; without
+        // it the delta pass re-discovers the moved message at its new UID
+        // and purges the stale row.
+        self.push_pending_mutations(&mut session).await?;
 
         // Hierarchy sync.
         let folders = self.sync_hierarchy(&mut session).await?;
@@ -133,11 +143,11 @@ impl SyncService {
             .map_err(|_| SyncError::Protocol("bus closed".into()))?;
 
         // Delta pass over every folder.
-        for folder in folders {
+        for folder in &folders {
             if cancel.is_cancelled() {
                 return Ok(());
             }
-            self.sync_folder(&mut session, &folder).await?;
+            self.sync_folder(&mut session, folder).await?;
         }
 
         // IDLE loop (or polling fallback).
@@ -150,6 +160,35 @@ impl SyncService {
             .any(|h| h.eq_ignore_ascii_case(&self.params.host));
         if idle_supported && !poll_only {
             self.emit_state(ConnectionState::Idle).await;
+            // Re-select the INBOX before idling: unsolicited EXISTS/EXPUNGE
+            // pushes only arrive for the *selected* mailbox, and the delta
+            // pass above left the session on the last folder of the list.
+            // Idling on, e.g., `Sent` made new INBOX mail invisible to the
+            // push path until the 29-minute idle timeout (seen by the
+            // daily-loop gate on a fresh volume). Selecting INBOX — the
+            // folder a mail client is woken for in practice — makes IDLE
+            // pushes wake the delta pass; other folders are covered by the
+            // poll fallback below and the per-cycle full pass.
+            let inbox_name = folders
+                .iter()
+                .find(|f| f.remote_name.eq_ignore_ascii_case("INBOX"))
+                .map(|f| f.remote_name.clone());
+            if let Some(inbox_name) = &inbox_name {
+                let mailbox = Mailbox::try_from(inbox_name.clone())
+                    .map_err(|e| SyncError::Protocol(format!("mailbox name: {e:?}")))?;
+                let outcome = session
+                    .execute(
+                        CommandBody::Select {
+                            mailbox,
+                            parameters: Vec::new(),
+                        },
+                        Duration::from_mins(1),
+                    )
+                    .await?;
+                if !outcome.is_ok() {
+                    tracing::warn!(folder = %inbox_name, "pre-idle INBOX SELECT failed");
+                }
+            }
             loop {
                 if cancel.is_cancelled() {
                     session.logout().await;
@@ -272,6 +311,175 @@ impl SyncService {
             }
         }
         rows
+    }
+
+    /// Applies locally-queued flag/move mutations to the server (UID STORE
+    /// / UID MOVE) and removes the queue rows on success. Runs at the start
+    /// of every sync cycle, before the hierarchy/delta passes. One failing
+    /// op is recorded (retry counter) and left queued; it must not abort
+    /// the whole cycle.
+    async fn push_pending_mutations(&self, session: &mut ImapSession) -> SyncResult<()> {
+        let ops = match self.storage.drain_push_queue(self.account).await {
+            Ok(ops) => ops,
+            Err(e) => {
+                tracing::warn!(account = %self.account, error = %e, "push queue drain failed");
+                return Ok(());
+            }
+        };
+        if ops.is_empty() {
+            return Ok(());
+        }
+        tracing::debug!(account = %self.account, count = ops.len(), "pushing queued mutations");
+
+        for op in ops {
+            if let Err(e) = self.push_one(session, op).await {
+                tracing::warn!(account = %self.account, error = %e, "push op failed");
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies one queued mutation. Errors are recorded on the row (retry
+    /// counter) and the row stays queued.
+    async fn push_one(
+        &self,
+        session: &mut ImapSession,
+        op: kestrel_core::store_model::PushOp,
+    ) -> Result<(), SyncError> {
+        match op.payload {
+            PushOpPayload::Flag {
+                folder,
+                uid,
+                add,
+                remove,
+                ..
+            } => {
+                self.push_flag(session, op.id, folder, uid, &add, &remove)
+                    .await
+            }
+            PushOpPayload::Move {
+                from_folder,
+                uid,
+                to_folder,
+                ..
+            } => {
+                self.push_move(session, op.id, from_folder, uid, to_folder)
+                    .await
+            }
+        }
+    }
+
+    /// SELECTs the payload folder and applies the queued flag mutation via
+    /// `UID STORE`.
+    async fn push_flag(
+        &self,
+        session: &mut ImapSession,
+        op_id: i64,
+        folder: kestrel_core::ids::FolderId,
+        uid: u32,
+        add: &[CoreFlag],
+        remove: &[CoreFlag],
+    ) -> Result<(), SyncError> {
+        let folder_row = self
+            .storage
+            .get_folder(folder)
+            .await
+            .map_err(SyncError::from)?;
+        self.select_push_folder(session, &folder_row.remote_name, "STORE")
+            .await?;
+        let to_flag = |f: &CoreFlag| -> Result<Flag<'static>, SyncError> {
+            use imap_next::imap_types::core::Atom;
+            Ok(match f {
+                CoreFlag::Seen => Flag::Seen,
+                CoreFlag::Answered => Flag::Answered,
+                CoreFlag::Flagged => Flag::Flagged,
+                CoreFlag::Deleted => Flag::Deleted,
+                CoreFlag::Draft => Flag::Draft,
+                // "Custom" is a valid atom, so the fallback is total;
+                // no panic path on untrusted flag strings.
+                CoreFlag::Custom(s) => Flag::Keyword(
+                    Atom::try_from(s.clone())
+                        .or_else(|_| Atom::try_from("Custom".to_owned()))
+                        .map_err(|_| SyncError::Protocol("invalid flag atom".into()))?,
+                ),
+            })
+        };
+        let map_flags = |flags: &[CoreFlag]| -> Result<Vec<Flag<'static>>, SyncError> {
+            flags.iter().map(&to_flag).collect()
+        };
+        let add_flags = map_flags(add)?;
+        let remove_flags = map_flags(remove)?;
+        let ok = session
+            .uid_store_flags(&[uid], &add_flags, &remove_flags)
+            .await?;
+        if ok {
+            let _ = self.storage.remove_push_op(op_id).await;
+        } else {
+            let _ = self
+                .storage
+                .mark_push_op_failed(op_id, "UID STORE rejected")
+                .await;
+        }
+        Ok(())
+    }
+
+    /// SELECTs the source folder and moves the queued message via
+    /// `UID MOVE` (COPY+EXPUNGE fallback inside the session helper).
+    async fn push_move(
+        &self,
+        session: &mut ImapSession,
+        op_id: i64,
+        from_folder: kestrel_core::ids::FolderId,
+        uid: u32,
+        to_folder: kestrel_core::ids::FolderId,
+    ) -> Result<(), SyncError> {
+        let from_row = self
+            .storage
+            .get_folder(from_folder)
+            .await
+            .map_err(SyncError::from)?;
+        let to_row = self
+            .storage
+            .get_folder(to_folder)
+            .await
+            .map_err(SyncError::from)?;
+        self.select_push_folder(session, &from_row.remote_name, "MOVE")
+            .await?;
+        // Server applies the move. Cache reconciliation rides the
+        // subsequent delta pass: the destination folder re-discovers the
+        // message at its new UID (COPYUID pairs could skip the re-fetch;
+        // a future optimization), and the source folder's vanished-diff
+        // purges the stale row. Either way the push row is done.
+        let _ = session.uid_move(&[uid], &to_row.remote_name).await?;
+        let _ = self.storage.remove_push_op(op_id).await;
+        Ok(())
+    }
+
+    /// SELECT wrapper shared by the push helpers (fail → protocol error).
+    async fn select_push_folder(
+        &self,
+        session: &mut ImapSession,
+        remote_name: &str,
+        context: &str,
+    ) -> Result<(), SyncError> {
+        let mailbox = Mailbox::try_from(remote_name.to_owned())
+            .map_err(|e| SyncError::Protocol(format!("mailbox name: {e:?}")))?;
+        let outcome = session
+            .execute(
+                CommandBody::Select {
+                    mailbox,
+                    parameters: Vec::new(),
+                },
+                Duration::from_mins(1),
+            )
+            .await?;
+        if !outcome.is_ok() {
+            return Err(SyncError::Protocol(format!(
+                "push {context} select {remote_name}: {}",
+                outcome.status_summary()
+            )));
+        }
+        Ok(())
     }
 
     /// SELECT + delta sync for one folder (sync-engine.md §2-3).

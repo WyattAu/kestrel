@@ -6,7 +6,8 @@ use kestrel_core::{
     ids::{AccountId, BlobHash, FolderId, MessageId, OutboxId},
     protocol::{ConnectionState, FlagOp, MessageView, SortSpec, Window},
     store_model::{
-        FolderRow, IngestBatch, IngestStats, MailStore, NewFolder, OutboxRow, SnoozeEntry,
+        FolderRow, IngestBatch, IngestStats, MailStore, NewFolder, OutboxRow, PushOp,
+        PushOpPayload, PushOpType, SnoozeEntry,
     },
 };
 
@@ -149,5 +150,33 @@ impl MailStore for StorageHandle {
 
     async fn remove_snooze(&self, message: MessageId) -> Result<(), KestrelError> {
         StorageHandle::remove_snooze(self, message).await
+    }
+
+    async fn message_locations(
+        &self,
+        messages: Vec<MessageId>,
+    ) -> Result<Vec<(MessageId, FolderId, u32)>, KestrelError> {
+        StorageHandle::message_locations(self, messages).await
+    }
+
+    async fn enqueue_push_op(
+        &self,
+        account: AccountId,
+        op_type: PushOpType,
+        payload: PushOpPayload,
+    ) -> Result<(), KestrelError> {
+        StorageHandle::push_enqueue(self, account, op_type, payload).await
+    }
+
+    async fn drain_push_queue(&self, account: AccountId) -> Result<Vec<PushOp>, KestrelError> {
+        StorageHandle::push_drain(self, account).await
+    }
+
+    async fn mark_push_op_failed(&self, id: i64, error: &str) -> Result<(), KestrelError> {
+        StorageHandle::push_mark_failed(self, id, error.to_string()).await
+    }
+
+    async fn remove_push_op(&self, id: i64) -> Result<(), KestrelError> {
+        StorageHandle::push_remove(self, id).await
     }
 }

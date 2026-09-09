@@ -16,8 +16,14 @@ use kestrel_core::{
         AccountSummary, FlagOp, FolderSummary, MailProtocol, MessagePage, MessageSummary,
         MessageView, Provider, SortSpec, Window,
     },
+    store_model::{PushOp, PushOpPayload, PushOpType},
 };
 use tokio::sync::{mpsc, oneshot};
+
+/// Reply channel for the `MessageLocations` command (the
+/// `type_complexity` lint otherwise fires on the nested generic).
+type MessageLocationsReply = oneshot::Sender<Result<Vec<(MessageId, FolderId, u32)>, StorageError>>;
+
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, instrument};
 
@@ -142,6 +148,13 @@ pub enum StoreCommand {
         messages: Vec<MessageId>,
         /// Reply channel.
         reply: oneshot::Sender<Result<u64, StorageError>>,
+    },
+    /// Look up (folder, uid) coordinates for messages (push-op targeting).
+    MessageLocations {
+        /// Targets.
+        messages: Vec<MessageId>,
+        /// Reply channel.
+        reply: MessageLocationsReply,
     },
     /// Re-assign messages to another folder with fresh UIDs (post-server
     /// MOVE mirror).
@@ -289,6 +302,42 @@ pub enum StoreCommand {
     },
     /// Remove a pending op after successful replay.
     PendingOpsRemove {
+        /// Row id.
+        id: i64,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), StorageError>>,
+    },
+
+    // ---- server-push queue (mutation push to the IMAP server) ----
+    /// Enqueue a mutation for server-side application (UID STORE/MOVE).
+    PushEnqueue {
+        /// Owning account.
+        account: AccountId,
+        /// Operation type.
+        op_type: PushOpType,
+        /// Serialized payload.
+        payload: PushOpPayload,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<i64, StorageError>>,
+    },
+    /// Drain the push queue for an account (FIFO order).
+    PushDrain {
+        /// Account.
+        account: AccountId,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<Vec<PushOp>, StorageError>>,
+    },
+    /// Mark a push op as failed.
+    PushMarkFailed {
+        /// Row id.
+        id: i64,
+        /// Error message.
+        error: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), StorageError>>,
+    },
+    /// Remove a push op after successful application.
+    PushRemove {
         /// Row id.
         id: i64,
         /// Reply channel.
@@ -632,6 +681,18 @@ impl StorageHandle {
             .await
     }
 
+    /// Looks up the (folder, uid) coordinates for the given messages.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn message_locations(
+        &self,
+        messages: Vec<MessageId>,
+    ) -> Result<Vec<(MessageId, FolderId, u32)>, KestrelError> {
+        self.call(move |reply| StoreCommand::MessageLocations { messages, reply })
+            .await
+    }
+
     /// Fetches messages pending index.
     ///
     /// # Errors
@@ -832,6 +893,53 @@ impl StorageHandle {
     /// [`KestrelError`] on storage failure.
     pub async fn pending_ops_remove(&self, id: i64) -> Result<(), KestrelError> {
         self.call(move |reply| StoreCommand::PendingOpsRemove { id, reply })
+            .await
+    }
+
+    /// Enqueues a mutation for server-side application (UID STORE/MOVE).
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn push_enqueue(
+        &self,
+        account: AccountId,
+        op_type: PushOpType,
+        payload: PushOpPayload,
+    ) -> Result<(), KestrelError> {
+        self.call(move |reply| StoreCommand::PushEnqueue {
+            account,
+            op_type,
+            payload,
+            reply,
+        })
+        .await
+        .map(|_: i64| ())
+    }
+
+    /// Drains the server-push queue for an account (FIFO).
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn push_drain(&self, account: AccountId) -> Result<Vec<PushOp>, KestrelError> {
+        self.call(move |reply| StoreCommand::PushDrain { account, reply })
+            .await
+    }
+
+    /// Marks a push op as failed.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn push_mark_failed(&self, id: i64, error: String) -> Result<(), KestrelError> {
+        self.call(move |reply| StoreCommand::PushMarkFailed { id, error, reply })
+            .await
+    }
+
+    /// Removes a push op after successful application.
+    ///
+    /// # Errors
+    /// [`KestrelError`] on storage failure.
+    pub async fn push_remove(&self, id: i64) -> Result<(), KestrelError> {
+        self.call(move |reply| StoreCommand::PushRemove { id, reply })
             .await
     }
 
@@ -1052,6 +1160,9 @@ fn reply_open_error(cmd: StoreCommand, err: &StorageError) {
         C::MoveMessages { reply, .. } => {
             let _ = reply.send(Err(err));
         }
+        C::MessageLocations { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
         C::PurgeFolder { reply, .. } => {
             let _ = reply.send(Err(err));
         }
@@ -1095,6 +1206,18 @@ fn reply_open_error(cmd: StoreCommand, err: &StorageError) {
             let _ = reply.send(Err(err));
         }
         C::PendingOpsRemove { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::PushEnqueue { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::PushDrain { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::PushMarkFailed { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        C::PushRemove { reply, .. } => {
             let _ = reply.send(Err(err));
         }
         C::WriteBlob { reply, .. } => {
@@ -1199,6 +1322,9 @@ async fn dispatch(store: &Arc<crate::ops::Store>, cmd: StoreCommand) {
         C::PurgeFolder { folder, reply } => {
             let _ = reply.send(store.purge_folder(folder).await);
         }
+        C::MessageLocations { messages, reply } => {
+            let _ = reply.send(store.message_locations(&messages).await);
+        }
         C::PendingIndex { limit, reply } => {
             let _ = reply.send(store.pending_index(limit).await);
         }
@@ -1278,6 +1404,27 @@ async fn dispatch(store: &Arc<crate::ops::Store>, cmd: StoreCommand) {
         }
         C::PendingOpsRemove { id, reply } => {
             let _ = reply.send(store.remove_pending_op(id).await);
+        }
+        C::PushEnqueue {
+            account,
+            op_type,
+            payload,
+            reply,
+        } => {
+            use crate::ops::StorePushQueueExt as _;
+            let _ = reply.send(store.enqueue_push(account, op_type, &payload).await);
+        }
+        C::PushDrain { account, reply } => {
+            use crate::ops::StorePushQueueExt as _;
+            let _ = reply.send(store.drain_push_queue(account).await);
+        }
+        C::PushMarkFailed { id, error, reply } => {
+            use crate::ops::StorePushQueueExt as _;
+            let _ = reply.send(store.mark_push_failed(id, &error).await);
+        }
+        C::PushRemove { id, reply } => {
+            use crate::ops::StorePushQueueExt as _;
+            let _ = reply.send(store.remove_push(id).await);
         }
         C::WriteBlob { bytes, reply } => {
             // CAS write + registry row (refcount 0) so unreferenced blobs

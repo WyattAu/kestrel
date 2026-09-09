@@ -16,7 +16,14 @@ services:
       - sh
       - -c
       - |
-        mkdir -p /var/mail/kestrel/Maildir/cur /var/mail/kestrel/Maildir/new /var/mail/kestrel/Maildir/tmp /var/mail/kestrel/Sent /var/mail/kestrel/Archive
+        # Maildir++ submailboxes: .Sent/.Archive under the INBOX Maildir root
+        # become real "Sent"/"Archive" IMAP mailboxes (bare sibling dirs do
+        # NOT — Dovecot never lists them, silently breaking Sent filing and
+        # the archive journey).
+        for box in Sent Archive; do
+          mkdir -p /var/mail/kestrel/Maildir/.$$box/cur /var/mail/kestrel/Maildir/.$$box/new /var/mail/kestrel/Maildir/.$$box/tmp
+        done
+        mkdir -p /var/mail/kestrel/Maildir/cur /var/mail/kestrel/Maildir/new /var/mail/kestrel/Maildir/tmp
         chown -R 1000:1000 /var/mail
         echo 'kestrel:{PLAIN}testpass:1000:1000::/var/mail/kestrel' > /etc/dovecot/users
         dovecot -F

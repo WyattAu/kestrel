@@ -269,11 +269,17 @@ pub fn validate_account_config(config: &AccountConfig) -> Vec<String> {
     if config.smtp_port == 0 {
         errors.push("SMTP port must be > 0".into());
     }
-    if !matches!(config.imap_security.as_str(), "tls" | "starttls") {
-        errors.push("IMAP security must be 'tls' or 'starttls'".into());
+    if !matches!(
+        config.imap_security.as_str(),
+        "tls" | "starttls" | "insecure"
+    ) {
+        errors.push("IMAP security must be 'tls', 'starttls' or 'insecure'".into());
     }
-    if !matches!(config.smtp_security.as_str(), "tls" | "starttls") {
-        errors.push("SMTP security must be 'tls' or 'starttls'".into());
+    if !matches!(
+        config.smtp_security.as_str(),
+        "tls" | "starttls" | "insecure"
+    ) {
+        errors.push("SMTP security must be 'tls', 'starttls' or 'insecure'".into());
     }
     if !matches!(config.auth_kind.as_str(), "password" | "oauth2") {
         errors.push("auth kind must be 'password' or 'oauth2'".into());

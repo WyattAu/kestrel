@@ -103,6 +103,12 @@ pub(crate) trait StoreMessagesExt {
         moves: &[(MessageId, FolderId, u32)],
     ) -> impl Future<Output = StorageResult<u64>>;
     fn purge_folder(&self, folder: FolderId) -> impl Future<Output = StorageResult<u64>>;
+    /// Looks up the (folder, uid) coordinates for the given messages
+    /// (server-push targeting; rows for unknown messages are skipped).
+    fn message_locations(
+        &self,
+        messages: &[MessageId],
+    ) -> impl Future<Output = StorageResult<Vec<(MessageId, FolderId, u32)>>>;
     fn pending_index(&self, limit: u64) -> impl Future<Output = StorageResult<Vec<PendingDoc>>>;
     fn feed_all_for_index(
         &self,
@@ -707,6 +713,34 @@ impl StoreMessagesExt for Store {
         .execute(&self.db.cache.write)
         .await?;
         Ok(result.rows_affected())
+    }
+
+    /// Looks up the (folder, uid) coordinates for the given messages.
+    async fn message_locations(
+        &self,
+        messages: &[MessageId],
+    ) -> StorageResult<Vec<(MessageId, FolderId, u32)>> {
+        if messages.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids_json =
+            serde_json::to_string(&messages.iter().map(ToString::to_string).collect::<Vec<_>>())?;
+        let rows = sqlx::query!(
+            "SELECT id, folder_id, uid FROM messages WHERE id IN (SELECT value FROM json_each(?1))",
+            ids_json
+        )
+        .fetch_all(&self.db.cache.read)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some((
+                    MessageId::parse(&r.id)?,
+                    FolderId::parse(&r.folder_id)?,
+                    u32::try_from(r.uid.max(0)).ok()?,
+                ))
+            })
+            .collect())
     }
 
     /// Messages pending index (catch-up cursor), re-parsed for body text.

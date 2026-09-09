@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO push_queue (account_id, op_type, payload_json, created_at, retry_count, last_error)\n             VALUES (?1, ?2, ?3, ?4, 0, NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "74de38d22ed9cbc44f0ed4b1c539b084403074db786e10368f554263b50c69a7"
+}

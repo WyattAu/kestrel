@@ -8,6 +8,7 @@ mod blobs_gc;
 mod messages;
 mod outbox;
 mod pending_ops;
+mod push_queue;
 mod snooze;
 
 use std::sync::Arc;
@@ -47,6 +48,7 @@ pub(crate) use messages::StoreMessagesExt;
 pub(crate) use outbox::StoreOutboxExt;
 pub(crate) use pending_ops::StorePendingOpsExt;
 pub use pending_ops::{FlagPayload, OpType, PendingOp, PendingOpPayload};
+pub(crate) use push_queue::StorePushQueueExt;
 pub use snooze::SnoozeRow;
 pub(crate) use snooze::StoreSnoozeExt;
 

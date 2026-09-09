@@ -17,7 +17,7 @@ use kestrel_core::{
     config::Config,
     error::KestrelError,
     ids::{AccountId, IdGenerator},
-    protocol::{CommandPayload, EngineEvent, Provider, Reply, ShutdownStage, Window},
+    protocol::{CommandPayload, EngineEvent, FlagOp, Provider, Reply, ShutdownStage, Window},
 };
 use kestrel_storage::{
     FlagPayload, OpType, OutboxEnvelope, PendingOpPayload, SearchHandle, StorageHandle,
@@ -359,6 +359,11 @@ impl EngineRouter {
                 flags,
                 reply,
             } => {
+                // Server-push queue: flag mutations must reach the IMAP
+                // server (UID STORE) or the next delta sync reverts them.
+                // Enqueued in BOTH branches — offline mode additionally
+                // journals the local replay (pending_ops).
+                self.enqueue_flag_push(&messages, &flags).await;
                 if self.offline.load(Ordering::Relaxed) {
                     let account = self.first_account().await;
                     let payload = PendingOpPayload::Flag {
@@ -386,6 +391,10 @@ impl EngineRouter {
                 to,
                 reply,
             } => {
+                // Server-push queue: moves must reach the server (UID MOVE)
+                // or the next delta sync restores the message to its source
+                // folder (see SetFlags above for the offline note).
+                self.enqueue_move_push(&messages, to).await;
                 if self.offline.load(Ordering::Relaxed) {
                     let account = self.first_account().await;
                     let payload = PendingOpPayload::Move { messages, to };
@@ -739,10 +748,13 @@ impl EngineRouter {
         }
     }
 
-    /// Parses a security string ("tls" | "starttls") into the enum.
+    /// Parses a security string ("tls" | "starttls" | "insecure") into the
+    /// enum. `"insecure"` (cleartext) exists for the integration fixtures
+    /// and self-hosted LAN servers; frontends must label it clearly.
     fn parse_security(s: &str) -> kestrel_sync::Security {
         match s {
             "starttls" => kestrel_sync::Security::StartTls,
+            "insecure" => kestrel_sync::Security::Insecure,
             _ => kestrel_sync::Security::Tls,
         }
     }
@@ -812,6 +824,7 @@ impl EngineRouter {
                 oauth2: config.auth_kind == "oauth2",
                 security: match config.smtp_security.as_str() {
                     "starttls" => kestrel_sync::SmtpSecurity::StartTls,
+                    "insecure" => kestrel_sync::SmtpSecurity::Insecure,
                     _ => kestrel_sync::SmtpSecurity::ImplicitTls,
                 },
             };
@@ -1157,6 +1170,103 @@ impl EngineRouter {
 
     /// Returns the first account id (used for offline enqueue when account
     /// context is unavailable from the mutation command).
+    /// Queues per-message flag push ops (server-side UID STORE) for the
+    /// given messages. Best-effort: a storage failure is logged and
+    /// swallowed — the local apply still succeeded, and the next full
+    /// reconciliation can re-converge. Locating the (folder, uid)
+    /// coordinates first keeps payloads stable even if the user mutates
+    /// again before the sync drain runs.
+    async fn enqueue_flag_push(&self, messages: &[kestrel_core::ids::MessageId], flags: &FlagOp) {
+        use kestrel_core::store_model::{PushOpPayload, PushOpType};
+        let (add, remove) = match flags {
+            FlagOp::Add(v) => (v.clone(), Vec::new()),
+            FlagOp::Remove(v) => (Vec::new(), v.clone()),
+            // A full replace cannot be expressed as add/remove deltas; the
+            // delta sync reconciles the remaining difference (and the next
+            // set of the same flags re-enqueues). Rare path: the TUI only
+            // issues Add/Remove today.
+            FlagOp::Set(_) => return,
+        };
+        if add.is_empty() && remove.is_empty() {
+            return;
+        }
+        let Ok(locations) = self.storage.message_locations(messages.to_vec()).await else {
+            return;
+        };
+        let account = self.current_account().await;
+        for (message, folder, uid) in locations {
+            let payload = PushOpPayload::Flag {
+                message,
+                folder,
+                uid,
+                add: add.clone(),
+                remove: remove.clone(),
+            };
+            if let Err(e) = self
+                .storage
+                .push_enqueue(account, PushOpType::Flag, payload)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to enqueue flag push op");
+            }
+        }
+        // Wake the sync service so the drain runs now, not at the next
+        // natural cycle (which could be 29 minutes away while IDLE — the
+        // delta pass would then revert the user's mutation server-side).
+        self.wake_sync(account).await;
+    }
+
+    /// Wakes one account's sync service via its registry handle (the same
+    /// mechanism as the `TriggerSync` command). Unknown accounts are ignored.
+    async fn wake_sync(&self, account: kestrel_core::ids::AccountId) {
+        let registry = self.registry.lock().await;
+        if let Some(handle) = registry.get(&account) {
+            handle.trigger.notify_one();
+        }
+    }
+
+    /// Queues a per-message move push op (server-side UID MOVE) for the
+    /// given messages into the destination folder. Best-effort; see
+    /// [`Self::enqueue_flag_push`].
+    async fn enqueue_move_push(
+        &self,
+        messages: &[kestrel_core::ids::MessageId],
+        to: kestrel_core::ids::FolderId,
+    ) {
+        use kestrel_core::store_model::{PushOpPayload, PushOpType};
+        let Ok(locations) = self.storage.message_locations(messages.to_vec()).await else {
+            return;
+        };
+        let account = self.current_account().await;
+        for (message, from_folder, uid) in locations {
+            if from_folder == to {
+                continue; // no-op move
+            }
+            let payload = PushOpPayload::Move {
+                message,
+                from_folder,
+                uid,
+                to_folder: to,
+            };
+            if let Err(e) = self
+                .storage
+                .push_enqueue(account, PushOpType::Move, payload)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to enqueue move push op");
+            }
+        }
+        // Drain now (see wake_sync).
+        self.wake_sync(account).await;
+    }
+
+    /// The account the queued push ops belong to. Single-account today:
+    /// `first_account` covers the current data model and matches the
+    /// offline-journal behavior.
+    async fn current_account(&self) -> AccountId {
+        self.first_account().await
+    }
+
     async fn first_account(&self) -> AccountId {
         self.storage
             .list_accounts()

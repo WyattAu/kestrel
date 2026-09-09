@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE push_queue\n             SET retry_count = retry_count + 1, last_error = ?2\n             WHERE id = ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "8895fa31dc624f9a0fdf04f85132570be5703a46317f397004fab40cf0d0ef5a"
+}

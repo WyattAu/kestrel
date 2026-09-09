@@ -614,6 +614,148 @@ impl ImapSession {
         self.uid_fetch(&uid.to_string(), items).await
     }
 
+    /// `UID STORE <uids> +FLAGS.SILENT/-FLAGS.SILENT` — the mutation-push
+    /// half of flag changes (sync-engine.md §6). Batches the UID set into
+    /// protocol-safe groups; returns `Ok(true)` only when every batch got a
+    /// tagged OK.
+    ///
+    /// # Errors
+    /// Connection/protocol failures.
+    pub async fn uid_store_flags(
+        &mut self,
+        uids: &[u32],
+        add: &[Flag<'static>],
+        remove: &[Flag<'static>],
+    ) -> SyncResult<bool> {
+        let mut all_ok = true;
+        for batch in push_batches(uids) {
+            for (kind, flags) in [
+                (imap_next::imap_types::flag::StoreType::Add, add),
+                (imap_next::imap_types::flag::StoreType::Remove, remove),
+            ] {
+                if flags.is_empty() {
+                    continue;
+                }
+                let outcome = self
+                    .execute(
+                        CommandBody::Store {
+                            sequence_set: batch
+                                .clone()
+                                .try_into()
+                                .map_err(|e| SyncError::Protocol(format!("sequence set: {e:?}")))?,
+                            kind,
+                            response: imap_next::imap_types::flag::StoreResponse::Silent,
+                            flags: flags.to_vec(),
+                            uid: true,
+                            modifiers: Vec::default(),
+                        },
+                        Duration::from_secs(30),
+                    )
+                    .await?;
+                all_ok &= outcome.is_ok();
+            }
+        }
+        Ok(all_ok)
+    }
+
+    /// Moves messages server-side: `UID MOVE` when the server advertises
+    /// MOVE, otherwise `UID COPY` + `\Deleted` + `UID EXPUNGE` (UIDPLUS) or
+    /// plain `EXPUNGE`. Returns the server-assigned destination UIDs keyed
+    /// by source UID when the server reported COPYUID (UIDPLUS), else
+    /// `None`.
+    ///
+    /// # Errors
+    /// Connection/protocol failures.
+    #[allow(clippy::too_many_lines)]
+    pub async fn uid_move(
+        &mut self,
+        uids: &[u32],
+        mailbox_name: &str,
+    ) -> SyncResult<Option<Vec<(u32, u32)>>> {
+        let mailbox = imap_next::imap_types::mailbox::Mailbox::try_from(mailbox_name.to_owned())
+            .map_err(|e| SyncError::Protocol(format!("move mailbox: {e:?}")))?;
+        let mut mapping: Vec<(u32, u32)> = Vec::new();
+        for batch in push_batches(uids) {
+            if self.has_capability("MOVE") {
+                let outcome = self
+                    .execute(
+                        CommandBody::Move {
+                            sequence_set: batch
+                                .clone()
+                                .try_into()
+                                .map_err(|e| SyncError::Protocol(format!("sequence set: {e:?}")))?,
+                            mailbox: mailbox.clone(),
+                            uid: true,
+                        },
+                        Duration::from_mins(1),
+                    )
+                    .await?;
+                if !outcome.is_ok() {
+                    return Err(SyncError::Protocol(format!(
+                        "UID MOVE failed: {}",
+                        outcome.status_summary()
+                    )));
+                }
+                if let Some(pairs) = copy_uid_pairs(&outcome) {
+                    mapping.extend(pairs);
+                }
+            } else {
+                // COPY + flag + expunge fallback (RFC 4315 servers).
+                let outcome = self
+                    .execute(
+                        CommandBody::Copy {
+                            sequence_set: batch
+                                .clone()
+                                .try_into()
+                                .map_err(|e| SyncError::Protocol(format!("sequence set: {e:?}")))?,
+                            mailbox: mailbox.clone(),
+                            uid: true,
+                        },
+                        Duration::from_mins(1),
+                    )
+                    .await?;
+                if !outcome.is_ok() {
+                    return Err(SyncError::Protocol(format!(
+                        "UID COPY failed: {}",
+                        outcome.status_summary()
+                    )));
+                }
+                if let Some(pairs) = copy_uid_pairs(&outcome) {
+                    mapping.extend(pairs);
+                }
+                let seen_deleted = self
+                    .uid_store_flags(
+                        &batch.iter().map(|n| n.get()).collect::<Vec<u32>>(),
+                        &[],
+                        &[Flag::Deleted],
+                    )
+                    .await?;
+                if !seen_deleted {
+                    return Err(SyncError::Protocol("UID STORE \\Deleted failed".into()));
+                }
+                self.expunge().await?;
+            }
+        }
+        Ok((!mapping.is_empty()).then_some(mapping))
+    }
+
+    /// `EXPUNGE` to purge `\Deleted` messages from the selected mailbox.
+    /// Plain EXPUNGE is used even under UIDPLUS: the drain runs before any
+    /// delta pass on a fresh connection, so no other writer's deletions are
+    /// piggy-backed in practice.
+    async fn expunge(&mut self) -> SyncResult<()> {
+        let outcome = self
+            .execute(CommandBody::Expunge, Duration::from_mins(1))
+            .await?;
+        if !outcome.is_ok() {
+            return Err(SyncError::Protocol(format!(
+                "EXPUNGE failed: {}",
+                outcome.status_summary()
+            )));
+        }
+        Ok(())
+    }
+
     /// Authenticates with the first server-supported preferred mechanism,
     /// falling back to LOGIN.
     async fn authenticate(&mut self, params: &ConnectParams) -> SyncResult<()> {
@@ -827,4 +969,62 @@ fn continuation_request_data(
             .unwrap_or_default(),
         Ccr::Basic(_) => Vec::new(),
     }
+}
+
+/// Splits a UID list into protocol-safe batches for sequence-set encoding
+/// (single contiguous runs become ranges; otherwise one UID per element).
+fn push_batches(uids: &[u32]) -> Vec<Vec<std::num::NonZeroU32>> {
+    let mut batches = Vec::new();
+    let mut current: Vec<std::num::NonZeroU32> = Vec::new();
+    for &uid in uids {
+        if uid == 0 {
+            continue; // never a valid server UID
+        }
+        if let Ok(n) = std::num::NonZeroU32::try_from(uid) {
+            current.push(n);
+        }
+        if current.len() >= 500 {
+            batches.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+/// Extracts source→destination UID pairs from a COPYUID response code
+/// (UIDPLUS, RFC 4315): present on the tagged OK of UID MOVE/COPY when the
+/// server supports it.
+fn copy_uid_pairs(outcome: &CommandOutcome) -> Option<Vec<(u32, u32)>> {
+    use imap_next::imap_types::extensions::uidplus::{UidElement, UidSet};
+
+    let code = match &outcome.status {
+        Status::Tagged(t) => t.body.code.as_ref(),
+        _ => None,
+    };
+    let Code::CopyUid {
+        uid_validity: _,
+        source,
+        destination,
+    } = code?
+    else {
+        return None;
+    };
+    let to_vec = |set: &UidSet| -> Vec<u32> {
+        set.0
+            .as_ref()
+            .iter()
+            .flat_map(|el| match el {
+                UidElement::Single(n) => vec![n.get()],
+                UidElement::Range(a, b) => (a.get()..=b.get()).collect::<Vec<u32>>(),
+            })
+            .collect()
+    };
+    Some(
+        to_vec(source)
+            .into_iter()
+            .zip(to_vec(destination))
+            .collect(),
+    )
 }
