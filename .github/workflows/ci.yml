@@ -27,7 +27,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -58,7 +58,7 @@ jobs:
       # libgl1-mesa-dri: the Slint shell renders via femtovg/OpenGL; headless
       # runners have no GPU, so software GL (llvmpipe) must be available. The
       # libxkbcommon/xcb set is what winit dlopens at startup under X11.
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0 pkg-config xvfb
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0 pkg-config xvfb
       - name: Network-isolation test for the viewport (threat-model T3)
         run: bash scripts/webview-netns-test.sh
 
@@ -74,7 +74,7 @@ jobs:
       # libgl1-mesa-dri: the Slint shell renders via femtovg/OpenGL; headless
       # runners have no GPU, so software GL (llvmpipe) must be available. The
       # libxkbcommon/xcb set is what winit dlopens at startup under X11.
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0 pkg-config xvfb
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xfixes0 libxcb-render-util0 pkg-config xvfb
       - run: cargo build -p kestrel-tui -p kestrel-gui --release
       - name: Measure GUI startup + idle RSS
         run: bash scripts/measure-process-startup.sh target/release/kestrel-gui --xvfb
@@ -92,7 +92,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -116,7 +116,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # sqlx prepare compiles workspace members (gui pulls webkit/gtk/dbus).
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev sqlite3 pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev sqlite3 pkg-config
       - uses: taiki-e/install-action@v2
         with:
           # cargo-sqlx does not exist as an install-action/binstall crate;
@@ -133,7 +133,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
       - env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps
@@ -184,7 +184,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
       - name: Run benchmarks
         run: cargo bench --workspace 2>&1 | tee bench-output.txt
       - name: Enforce SLA thresholds
@@ -374,7 +374,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # libdbus-1-dev: the kestrel-crypto keyring backend pulls libdbus-sys.
-      - run: sudo apt-get update && sudo apt-get install -y gnupg openssl libdbus-1-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y gnupg openssl libdbus-1-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -388,7 +388,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -409,7 +409,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # fontconfig: kestrel-mobile's UI stack links it on Linux hosts.
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libfontconfig1-dev libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libfontconfig1-dev libsqlite3-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -436,7 +436,7 @@ jobs:
       # version-named toolchain, not dtolnay's "stable" — so install the
       # target on the toolchain cargo will actually use.
       - run: rustup target add ${{ matrix.target }}
-      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libfontconfig1-dev libsqlite3-dev pkg-config
       # ring/sqlite/openssl build scripts need the NDK clang for the target
       # triple ("<triple>-clang"), which only ships in the NDK; cc-rs does
       # not auto-discover it here, so export the per-target CC/AR explicitly.
@@ -475,7 +475,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz -> target
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libssl-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libssl-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
@@ -503,7 +503,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
