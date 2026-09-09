@@ -21,7 +21,7 @@ task lists here.
 |-------|-----------|--------|-----------------------------------|---------------|
 | **1 — Core storage & parsing** | `phase-1` | **In progress — implementation landed; exit gates run in CI** | `kestrel-core` types & protocol types, SQLite schema + migrations (ADR 0003, `docs/schema.md`), `MimeParser` adapter (ADR 0002), Tantivy indexing pipeline, threading, blob CAS + GC | Ingestion benchmark ≥ 800 msgs/sec (target 1,500); fuzz corpus green; schema + parser crates reviewed against threat model §4 |
 | **2 — Sync engine** | `phase-2` | **Code present ahead of milestone (see “Known gaps” below)** | IMAP `FETCH`/`IDLE`/`STORE` via `imap-flow`/`imap-next` (ADR 0005/0010), QRESYNC/CONDSTORE deltas, `UIDVALIDITY` reconciliation, SMTP sender, OAuth2 loopback + PKCE, outbox with backoff, credential service (`docs/sync-engine.md`); JMAP sync service also landed early | Offline-first flows pass integration suite (Dovecot/Greenmail); outbox survives restart; token refresh unattended for 7 days |
-| **3 — TUI MVP** | `phase-3` | **MVP implemented ahead of milestone** | `kestrel-tui`: 3-pane + focus mode, vi keys, OSC 8, `$EDITOR` compose, Markdown → `multipart/alternative`, fuzzy search | Cold start < 50 ms; full read/ reply/ archive loop usable daily; memory < 25 MB idle |
+| **3 — TUI MVP** | `phase-3` | **MVP implemented ahead of milestone; cold-start SLA gate live in CI** | `kestrel-tui`: 3-pane + focus mode, vi keys, OSC 8, `$EDITOR` compose, Markdown → `multipart/alternative`, fuzzy search | Cold start < 50 ms (enforced in-process by `kestrel-tui/src/sla.rs` via the startup harness `--sla` mode; the process-level p50 cannot see it — wrapper boot + `/proc` discovery ≈300 ms on CI); full read/ reply/ archive loop usable daily; memory < 25 MB idle |
 | **4 — GUI MVP** | `phase-4` | **Shell + viewport implemented; security matrix partial** | `kestrel-gui`: Slint shell (ADR 0001), sandboxed `wry` viewport + `kestrel-cid://`, composer, tray, notifications, theme | Threat-model §7 webview test matrix green; cold start < 200 ms; CSP verified on every load |
 | **5 — Hardening** | `phase-5` | **Partial — OpenPGP/S-MIME/JMAP landed early** | Broken-MIME stress corpora, JMAP (RFC 8620/8621), OpenPGP via Sequoia (sign/encrypt), S/MIME (CMS) sign/verify, performance polish to SLA targets | All SLA benchmarks at target (not just hard limit); JMAP account E2E; PGP round-trip interop tests |
 
@@ -77,9 +77,12 @@ now wired into the account lifecycle (#26): spawned per `oauth2` account,
 publishing fresh access tokens to IMAP/SMTP via a shared secret cell,
 surfacing revocation as `ConnectionState::NeedsReauth` (protocol v3),
 and proven end-to-end by `crates/kestrel-engine/tests/oauth_worker.rs`
-against a hermetic mock identity provider. Remaining for the phase-2
-exit: the OAuth2 flow-completion handler (`CompleteOAuth2Flow`) and UI
-re-auth affordances (tracked under #26's follow-ups).
+against a hermetic mock identity provider. The OAuth2 browser flow now
+completes server-side end-to-end (protocol v4: `CompleteOAuth2Flow` +
+`OAuth2FlowCompleted`; the wizard links the exchanged credentials and
+re-auth for a `NeedsReauth` account is the same path), proven by
+`crates/kestrel-engine/tests/oauth_flow.rs` including single-use `state`
+and CSRF-rejection gates.
 
 ## Definition of "phase done"
 

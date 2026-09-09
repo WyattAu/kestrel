@@ -78,8 +78,13 @@ jobs:
       - run: cargo build -p kestrel-tui -p kestrel-gui --release
       - name: Measure GUI startup + idle RSS
         run: bash scripts/measure-process-startup.sh target/release/kestrel-gui --xvfb
-      - name: Measure TUI startup + idle RSS
-        run: bash scripts/measure-process-startup.sh target/release/kestrel-tui
+      - name: Measure TUI startup + idle RSS (with in-process cold-start SLA gate)
+        # KESTREL_CI=1 activates the calibrated SLA budget in the app
+        # (kestrel-tui/src/sla.rs); the harness --sla flag reads the app's
+        # first-frame measurement and enforces the budget.
+        env:
+          KESTREL_CI: "1"
+        run: bash scripts/measure-process-startup.sh target/release/kestrel-tui --sla
 
   integration:
     runs-on: ubuntu-latest

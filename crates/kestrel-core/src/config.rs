@@ -361,6 +361,48 @@ pub struct LoadedConfig {
     pub warnings: Vec<String>,
 }
 
+/// The `KESTREL_*` environment layer (ADR 0006: env overrides, used
+/// mainly for tests and CI).
+///
+/// Foreign `KESTREL_*` variables — process flags like `KESTREL_CI` and
+/// `KESTREL_INTEGRATION`, or operational credentials like
+/// `KESTREL_OAUTH2_CLIENT_ID` (threat model §6: credentials are keyring
+/// material, not config) — must not enter the config namespace: `Config`
+/// rejects unknown keys, so unfiltered injection bricks every frontend
+/// whenever any such variable is present in the environment. The layer is
+/// therefore restricted to the known top-level config sections (and the
+/// scalar keys): overrides like `KESTREL_SYNC__...` still work, while
+/// everything else is ignored by this layer.
+fn env_layer() -> figment::providers::Env {
+    const SECTIONS: &[&str] = &[
+        "general",
+        "sync",
+        "storage",
+        "search",
+        "notifications",
+        "account_notifications",
+        "security",
+        "editor",
+        "log",
+        "templates",
+        "saved_searches",
+        "account_signatures",
+        "send_delay_seconds",
+        "keybindings",
+    ];
+    Env::prefixed("KESTREL_")
+        .split("__")
+        // Case-insensitive: figment lowercases keys only after the filter
+        // chain runs, so compare the raw segment insensitively.
+        .filter(move |key| {
+            key.as_str().split('.').next().is_some_and(|head| {
+                SECTIONS
+                    .iter()
+                    .any(|section| head.eq_ignore_ascii_case(section))
+            })
+        })
+}
+
 impl Config {
     /// Loads the layered configuration: defaults → file (if present) → env.
     ///
@@ -381,7 +423,7 @@ impl Config {
             })?;
             figment = figment.merge(Toml::file(&file));
         }
-        figment = figment.merge(Env::prefixed("KESTREL_").split("__"));
+        figment = figment.merge(env_layer());
 
         let config: Config =
             figment
@@ -590,6 +632,43 @@ mod tests {
         let loaded = Config::load(&paths).unwrap();
         unsafe { std::env::remove_var("KESTREL_SYNC__POLL_INTERVAL_SECS") };
         assert_eq!(loaded.config.sync.poll_interval_secs, 60);
+    }
+
+    // Regression (found by the phase-3 cold-start SLA gate, 2026-09-09):
+    // the env layer previously merged every `KESTREL_*` variable, so any
+    // foreign flag (`KESTREL_CI`, `KESTREL_INTEGRATION`, the documented
+    // `KESTREL_OAUTH2_*` credentials) failed extraction via
+    // `deny_unknown_fields` and bricked every frontend at startup.
+    #[test]
+    fn foreign_kestrel_env_vars_must_not_break_config_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = test_paths(tmp.path());
+        paths.ensure().unwrap();
+        let _guard = CONFIG_ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("KESTREL_CI", "1");
+            std::env::set_var("KESTREL_SLA_REPORT", "/tmp/whatever");
+            std::env::set_var("KESTREL_OAUTH2_CLIENT_ID", "not-config");
+            std::env::set_var("KESTREL_INTEGRATION", "1");
+        }
+        let loaded = Config::load(&paths);
+        unsafe {
+            std::env::remove_var("KESTREL_CI");
+            std::env::remove_var("KESTREL_SLA_REPORT");
+            std::env::remove_var("KESTREL_OAUTH2_CLIENT_ID");
+            std::env::remove_var("KESTREL_INTEGRATION");
+        }
+        let loaded = loaded.unwrap_or_else(|e| {
+            panic!("foreign KESTREL_* env vars broke Config::load: {e}");
+        });
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        // The known-section override path still works in the same process:
+        unsafe {
+            std::env::set_var("KESTREL_SYNC__POLL_INTERVAL_SECS", "90");
+        }
+        let loaded = Config::load(&paths).unwrap();
+        unsafe { std::env::remove_var("KESTREL_SYNC__POLL_INTERVAL_SECS") };
+        assert_eq!(loaded.config.sync.poll_interval_secs, 90);
     }
 
     #[test]

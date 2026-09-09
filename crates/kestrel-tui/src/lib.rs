@@ -7,5 +7,6 @@ pub mod autosave;
 pub mod editor;
 pub mod event;
 pub mod html;
+pub mod sla;
 pub mod theme;
 pub mod ui;

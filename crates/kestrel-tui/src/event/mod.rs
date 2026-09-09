@@ -72,6 +72,7 @@ fn spawn_input(tx: mpsc::Sender<TermEvent>) {
 pub async fn run(
     handle: EngineHandle,
     config: Arc<kestrel_core::config::Config>,
+    mut sla_probe: Option<&mut crate::sla::ColdStartProbe>,
 ) -> std::io::Result<()> {
     // Terminal requires a TTY (architecture §7: terminal restored on exit).
     use std::io::IsTerminal as _;
@@ -125,6 +126,11 @@ pub async fn run(
         terminal.draw(|f| {
             ui::draw(f, &state);
             ui::draw_modal(f, &state);
+            // First presented frame = time-to-interactive marker
+            // (phase-3 gate 1). Sticky: later draws don't overwrite it.
+            if let Some(probe) = sla_probe.as_deref_mut() {
+                probe.mark_first_frame();
+            }
         })?;
 
         // Poll with bounded wait (50 ms frame budget).
@@ -149,6 +155,16 @@ pub async fn run(
     }
 
     ratatui::restore();
+    // SLA enforcement (phase-3 gate 1): the report is written at
+    // first-frame time (the harness kills the app mid-loop); a caller can
+    // additionally request a hard failure on breach via KESTREL_SLA_ENFORCE.
+    if let Some(probe) = sla_probe
+        && let Some(ms) = probe.first_frame_ms()
+        && let Err(breach) = crate::sla::ColdStartProbe::check_sla(ms)
+        && std::env::var_os("KESTREL_SLA_ENFORCE").is_some()
+    {
+        return Err(std::io::Error::other(breach));
+    }
     Ok(())
 }
 

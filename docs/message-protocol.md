@@ -77,6 +77,17 @@ pub enum CommandPayload {
     RemoveAccount { account: AccountId,
                     reply: oneshot::Sender<Reply> },
 
+    // OAuth2 browser flow (PROTOCOL_VERSION 4)
+    StartOAuth2Flow { provider: Provider,
+                      reply: oneshot::Sender<Reply> },  // → Reply::OAuthUrl;
+                      // engine parks a loopback capture keyed by a single-use
+                      // `state` and completes autonomously (event below)
+    CompleteOAuth2Flow { state: String,
+                         reply: oneshot::Sender<Reply> },  // → Reply::OAuthTokens;
+                         // single-use retrieval of the exchanged credential set
+                         // (unknown/expired/redeemed `state` → Err). The frontend
+                         // links the account via AddAccount/UpdateAccount.
+
     // Config & lifecycle
     ConfigUpdated { snapshot: Arc<Config> },              // from watch_config()
     Shutdown { drain: bool },
@@ -90,6 +101,8 @@ pub enum Reply {
     SearchResults(Vec<SearchHit>),
     Accepted,                       // queued/applied; follow-up events will follow
     AttachmentData(Vec<u8>),        // raw attachment bytes
+    OAuthUrl(String),               // authorization URL (StartOAuth2Flow)
+    OAuthTokens(SecretStr),         // serialized credential set (CompleteOAuth2Flow)
     Err(ServiceError),              // ADR 0007 taxonomy payload
 }
 ```
@@ -107,6 +120,10 @@ pub enum EngineEvent {
     AccountConnection { account: AccountId, state: ConnectionState },
     // Disconnected | Connecting | Authenticating | Syncing | Idle |
     // OfflineMode | NeedsReauth
+    OAuth2FlowCompleted { state: String, result: Result<(), ServiceError> },
+    // An OAuth2 browser flow resolved server-side: on `Ok`, the exchanged
+    // credential set is retrievable once via CompleteOAuth2Flow { state }.
+    // Token material never rides the broadcast bus.
 
     // Mailbox changes
     MailArrived { account: AccountId, folder: FolderId, summary: FolderDelta },
@@ -137,7 +154,7 @@ pub enum EngineEvent {
 ### 3.1 `ServiceId` registry
 
 `ServiceDegraded` events identify the failing service by `ServiceId`. Current
-registry (as of `PROTOCOL_VERSION 3`): `Storage`, `Index`,
+registry (as of `PROTOCOL_VERSION 4`): `Storage`, `Index`,
 `Search`, `Outbox`, `Credentials`, `Config`, `Sync(AccountId)`,
 `Filter`, `Snooze`, `Maintenance` (GC scheduler). Additions are additive
 enum variants (minor, per §7).

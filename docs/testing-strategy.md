@@ -158,7 +158,7 @@ After triaging a crash:
 |---------|-------|------|
 | `bench/ingest` | `crates/kestrel-storage/benches/ingest.rs` | fail < 800 msgs/s, warn < 1 500 msgs/s |
 | `bench/search-100k` / `bench/search-500k` | `crates/kestrel-storage/benches/search.rs` | fail > 50 ms / > 30 ms first-50; warn > 15 ms |
-| `bench/cold-start-tui` | `crates/kestrel-tui` start harness (hyperfine-style, in-crate) | fail > 150 ms; target < 50 ms |
+| `bench/cold-start-tui` | `crates/kestrel-tui` start harness (hyperfine-style, in-crate) + in-process first-frame probe (`kestrel-tui/src/sla.rs`) via `scripts/measure-process-startup.sh --sla` | fail > 150 ms (bench); SLA gate: p50 first-frame ≤ 50 ms (× 6 calibrated on CI, app-reported budget) |
 | `bench/cold-start-gui` | `crates/kestrel-gui` start harness | fail > 500 ms; target < 200 ms |
 | `bench/idle-mem` | harness reads RSS after quiescence (`/proc/self/statm`) | TUI warn 25 MB/fail 40 MB; GUI warn 120 MB/fail 200 MB |
 
