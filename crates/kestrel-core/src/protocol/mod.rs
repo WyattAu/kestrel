@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Protocol major version, emitted in `EngineStarted`.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Which frontend originated a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +278,21 @@ pub enum CommandPayload {
         /// Reply channel (receives the authorization URL).
         reply: oneshot::Sender<Reply>,
     },
+    /// Complete a started `OAuth2` browser flow: exchange the captured
+    /// authorization code for tokens server-side and hand the credential
+    /// set to the frontend, which links it to an account through the
+    /// `AddAccount`/`UpdateAccount` commands (the engine never invents
+    /// server config). `state` is the single-use flow key from
+    /// [`EngineEvent::OAuth2FlowCompleted`] (or the `state` query parameter
+    /// of the authorization URL for engine-autonomous completion).
+    /// Unknown, expired, or already-completed `state`s are rejected — one
+    /// exchange per browser redirect (threat model §4.8).
+    CompleteOAuth2Flow {
+        /// Single-use flow key.
+        state: String,
+        /// Reply channel (receives the exchanged token set).
+        reply: oneshot::Sender<Reply>,
+    },
     /// Remove an account and all its local data.
     RemoveAccount {
         /// Account to remove.
@@ -332,6 +347,10 @@ pub enum Reply {
     Accepted,
     /// Authorization URL for an `OAuth2` browser flow.
     OAuthUrl(String),
+    /// Exchanged `OAuth2` token set from a completed browser flow (the
+    /// `CompleteOAuth2Flow` command); the JSON credential bundle the
+    /// frontend stores via `AddAccount`/`UpdateAccount`.
+    OAuthTokens(crate::secrets::SecretString),
     /// Typed failure (ADR 0007 taxonomy payload).
     Err(KestrelError),
 }
@@ -381,6 +400,20 @@ pub enum EngineEvent {
         account: AccountId,
         /// New state.
         state: ConnectionState,
+    },
+    /// An `OAuth2` browser flow finished server-side. `Ok(())` means the
+    /// redirect was captured and the code exchanged: the serialized
+    /// credential set is now retrievable (once) via the
+    /// `CompleteOAuth2Flow` command keyed by the same `state`. Token
+    /// material deliberately does not ride the broadcast bus — it is
+    /// handed over on the reply channel only. `Err` variants cover
+    /// capture timeout, state mismatch, provider rejection, and exchange
+    /// failure. Emitted exactly once per flow.
+    OAuth2FlowCompleted {
+        /// Single-use flow key (matches the `state` the browser echoed).
+        state: String,
+        /// Exchanged-and-ready, or the typed failure.
+        result: Result<(), KestrelError>,
     },
 
     // ---- mailbox changes ----
@@ -1143,7 +1176,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_three() {
-        assert_eq!(PROTOCOL_VERSION, 3);
+        assert_eq!(PROTOCOL_VERSION, 4);
     }
 
     #[test]

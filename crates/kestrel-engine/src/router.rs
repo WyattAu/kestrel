@@ -3,6 +3,7 @@
 //! architecture §3.3.
 
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -16,7 +17,7 @@ use kestrel_core::{
     config::Config,
     error::KestrelError,
     ids::{AccountId, IdGenerator},
-    protocol::{CommandPayload, EngineEvent, Reply, ShutdownStage, Window},
+    protocol::{CommandPayload, EngineEvent, Provider, Reply, ShutdownStage, Window},
 };
 use kestrel_storage::{
     FlagPayload, OpType, OutboxEnvelope, PendingOpPayload, SearchHandle, StorageHandle,
@@ -49,6 +50,30 @@ pub struct EngineRouter {
     /// Whether the shutdown epilogue waits (≤ 5 s) for the outbox final
     /// flush; set by `Command::Shutdown { drain }`, defaults to drain.
     drain_outbox: Arc<AtomicBool>,
+    /// Pending `OAuth2` browser flows keyed by the single-use `state` the
+    /// authorization URL carries (#28). Each entry owns the loopback
+    /// capture handle; the spawned completer removes it when the flow
+    /// resolves. Entries self-expire with the capture timeout, so the map
+    /// cannot grow unbounded.
+    oauth_flows: Arc<tokio::sync::Mutex<HashMap<String, PendingOAuthFlow>>>,
+}
+
+/// A started but not-yet-retrieved `OAuth2` browser flow (threat model
+/// §4.8: single-use `state`, loopback-only capture, codes never logged).
+enum PendingOAuthFlow {
+    /// Redirect not yet captured: the loopback handle resolves with the
+    /// code + PKCE verifier + redirect port, or a typed error (timeout,
+    /// state mismatch, provider error). Resolved exactly once.
+    Capturing {
+        /// Provider the flow authenticates with (re-derived preset at
+        /// completion so env overrides apply uniformly).
+        provider: Provider,
+        /// Loopback capture handle.
+        capture: tokio::task::JoinHandle<Result<kestrel_crypto::oauth::CapturedCode, KestrelError>>,
+    },
+    /// Code exchanged; serialized credential set awaiting its single
+    /// retrieval via `CompleteOAuth2Flow`.
+    Completed { tokens: String },
 }
 
 impl EngineRouter {
@@ -79,6 +104,7 @@ impl EngineRouter {
             engine_cancel,
             offline: Arc::new(AtomicBool::new(false)),
             drain_outbox: Arc::new(AtomicBool::new(true)),
+            oauth_flows: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -500,6 +526,15 @@ impl EngineRouter {
                 let result = self.update_account(config, password).await;
                 Self::answer(Some(reply), result.map(Reply::Accounts));
             }
+            P::CompleteOAuth2Flow { state, reply } => {
+                let result = self.complete_oauth2_flow(&state).await;
+                Self::answer(
+                    Some(reply),
+                    result.map(|tokens| {
+                        Reply::OAuthTokens(kestrel_core::secrets::SecretString::new(tokens))
+                    }),
+                );
+            }
 
             // ---- sync control ----
             // Fire-and-forget by construction (message-protocol §6.3): wake
@@ -817,39 +852,22 @@ impl EngineRouter {
         Ok(())
     }
 
-    /// Builds the `OAuth2` authorization URL for a provider.
-    /// The frontend opens this URL in the browser; the engine will listen
-    /// on a loopback server for the callback.
+    /// Starts an `OAuth2` browser flow: builds the authorization URL
+    /// (PKCE S256 + single-use `state`) and parks the loopback capture in
+    /// the pending-flow map. The flow completes server-side when the
+    /// browser redirect lands — either autonomously (the spawned completer
+    /// exchanges the code and emits
+    /// [`EngineEvent::OAuth2FlowCompleted`]) or when the frontend calls
+    /// [`Command::CompleteOAuth2Flow`] with the same `state`.
     #[instrument(skip_all)]
-    async fn start_oauth2_flow(
-        &self,
-        provider: &kestrel_core::protocol::Provider,
-    ) -> Result<String, KestrelError> {
-        let client_id =
-            std::env::var("KESTREL_OAUTH2_CLIENT_ID").unwrap_or_else(|_| "kestrel-desktop".into());
-        let oauth_provider = match provider {
-            kestrel_core::protocol::Provider::Gmail => {
-                kestrel_crypto::oauth::MailProvider::gmail(&client_id)
+    async fn start_oauth2_flow(&self, provider: &Provider) -> Result<String, KestrelError> {
+        let preset = kestrel_crypto::oauth::provider_from_env(provider).map_err(|e| {
+            KestrelError::DraftInvalid {
+                detail: e.to_string(),
             }
-            kestrel_core::protocol::Provider::Outlook => {
-                let tenant =
-                    std::env::var("KESTREL_OAUTH2_TENANT").unwrap_or_else(|_| "common".into());
-                kestrel_crypto::oauth::MailProvider::outlook(&client_id, &tenant)
-            }
-            kestrel_core::protocol::Provider::Yahoo => {
-                kestrel_crypto::oauth::MailProvider::yahoo(&client_id)
-            }
-            kestrel_core::protocol::Provider::Fastmail => {
-                kestrel_crypto::oauth::MailProvider::fastmail(&client_id)
-            }
-            _ => {
-                return Err(KestrelError::DraftInvalid {
-                    detail: "provider does not support OAuth2".into(),
-                });
-            }
-        };
-        let (flow, _handle) = kestrel_crypto::oauth::start_flow(
-            &oauth_provider,
+        })?;
+        let flow = kestrel_crypto::oauth::start_flow_captured(
+            &preset,
             None,
             std::time::Duration::from_mins(5),
         )
@@ -857,7 +875,184 @@ impl EngineRouter {
         .map_err(|e| KestrelError::OAuthFlowFailed {
             detail: e.to_string(),
         })?;
+        let capture = tokio::spawn(async move {
+            flow.handle
+                .await
+                .map_err(|e| KestrelError::OAuthFlowFailed {
+                    detail: format!("capture join: {e}"),
+                })?
+                .map_err(|e| KestrelError::OAuthFlowFailed {
+                    detail: e.to_string(),
+                })
+        });
+        let pending = PendingOAuthFlow::Capturing {
+            provider: provider.clone(),
+            capture,
+        };
+        self.oauth_flows
+            .lock()
+            .await
+            .insert(flow.state.clone(), pending);
+        self.spawn_flow_completer(flow.state);
         Ok(flow.url)
+    }
+
+    /// Spawns the autonomous flow completer: awaits the loopback capture,
+    /// exchanges the code off the router task, and reparks the serialized
+    /// credential set (or the failure) for retrieval. Resolution removes
+    /// the capturing entry (single-use) and publishes exactly one
+    /// [`EngineEvent::OAuth2FlowCompleted`].
+    fn spawn_flow_completer(&self, state: String) {
+        let flows = Arc::clone(&self.oauth_flows);
+        let bus = self.bus.clone();
+        let http = kestrel_crypto::oauth::shared_http_client();
+        tokio::spawn(async move {
+            // Take the capturing entry out: from here on the flow is
+            // resolving — a racing `CompleteOAuth2Flow` must observe it as
+            // gone (single-use, threat model §4.8).
+            let Some(PendingOAuthFlow::Capturing { provider, capture }) =
+                flows.lock().await.remove(&state)
+            else {
+                return; // already retrieved or never started
+            };
+            let captured = match capture.await {
+                Ok(Ok(captured)) => captured,
+                Ok(Err(e)) => {
+                    bus.publish(EngineEvent::OAuth2FlowCompleted {
+                        state,
+                        result: Err(e),
+                    });
+                    return;
+                }
+                Err(e) => {
+                    bus.publish(EngineEvent::OAuth2FlowCompleted {
+                        state,
+                        result: Err(KestrelError::OAuthFlowFailed {
+                            detail: format!("capture join: {e}"),
+                        }),
+                    });
+                    return;
+                }
+            };
+            let http = match http {
+                Ok(http) => http,
+                Err(e) => {
+                    bus.publish(EngineEvent::OAuth2FlowCompleted {
+                        state,
+                        result: Err(KestrelError::OAuthFlowFailed {
+                            detail: e.to_string(),
+                        }),
+                    });
+                    return;
+                }
+            };
+            let preset = match kestrel_crypto::oauth::provider_from_env(&provider) {
+                Ok(preset) => preset,
+                Err(e) => {
+                    bus.publish(EngineEvent::OAuth2FlowCompleted {
+                        state,
+                        result: Err(KestrelError::OAuthFlowFailed {
+                            detail: e.to_string(),
+                        }),
+                    });
+                    return;
+                }
+            };
+            let tokens = match kestrel_crypto::oauth::exchange_code(
+                &http,
+                &preset,
+                None,
+                &captured.code,
+                captured.port,
+                &captured.verifier,
+            )
+            .await
+            {
+                Ok(tokens) => tokens,
+                Err(e) => {
+                    bus.publish(EngineEvent::OAuth2FlowCompleted {
+                        state,
+                        result: Err(KestrelError::OAuthFlowFailed {
+                            detail: e.to_string(),
+                        }),
+                    });
+                    return;
+                }
+            };
+            match kestrel_crypto::oauth::serialize_token_set(&tokens) {
+                Ok(tokens) => {
+                    // Park the credential set for the single retrieval
+                    // via `CompleteOAuth2Flow`; if the frontend never
+                    // claims it this entry stays resident — bounded by
+                    // one slot per successful flow.
+                    flows
+                        .lock()
+                        .await
+                        .insert(state.clone(), PendingOAuthFlow::Completed { tokens });
+                    bus.publish(EngineEvent::OAuth2FlowCompleted {
+                        state,
+                        result: Ok(()),
+                    });
+                }
+                Err(e) => {
+                    bus.publish(EngineEvent::OAuth2FlowCompleted {
+                        state,
+                        result: Err(KestrelError::OAuthFlowFailed {
+                            detail: e.to_string(),
+                        }),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Completes a pending `OAuth2` flow by `state` and returns the
+    /// serialized credential set (single-use: a second call with the same
+    /// `state` fails). If the autonomous completer already exchanged the
+    /// code, this retrieves the parked result; otherwise it awaits the
+    /// capture and performs the exchange here.
+    #[instrument(skip_all)]
+    async fn complete_oauth2_flow(&self, state: &str) -> Result<String, KestrelError> {
+        let Some(pending) = self.oauth_flows.lock().await.remove(state) else {
+            return Err(KestrelError::OAuthFlowFailed {
+                detail: "unknown, expired, or already-completed OAuth2 flow".into(),
+            });
+        };
+        match pending {
+            PendingOAuthFlow::Completed { tokens } => Ok(tokens),
+            PendingOAuthFlow::Capturing { provider, capture } => {
+                let captured = capture.await.map_err(|e| KestrelError::OAuthFlowFailed {
+                    detail: format!("capture join: {e}"),
+                })??;
+                let preset = kestrel_crypto::oauth::provider_from_env(&provider).map_err(|e| {
+                    KestrelError::OAuthFlowFailed {
+                        detail: e.to_string(),
+                    }
+                })?;
+                let http = kestrel_crypto::oauth::shared_http_client().map_err(|e| {
+                    KestrelError::OAuthFlowFailed {
+                        detail: e.to_string(),
+                    }
+                })?;
+                let tokens = kestrel_crypto::oauth::exchange_code(
+                    &http,
+                    &preset,
+                    None,
+                    &captured.code,
+                    captured.port,
+                    &captured.verifier,
+                )
+                .await
+                .map_err(|e| KestrelError::OAuthFlowFailed {
+                    detail: e.to_string(),
+                })?;
+                kestrel_crypto::oauth::serialize_token_set(&tokens).map_err(|e| {
+                    KestrelError::OAuthFlowFailed {
+                        detail: e.to_string(),
+                    }
+                })
+            }
+        }
     }
 
     #[instrument(skip_all, fields(account = %draft.account))]

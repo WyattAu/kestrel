@@ -20,7 +20,7 @@
 use std::time::Duration;
 
 use kestrel_core::secrets::SecretString;
-pub use oauth_toolkit::{providers::MailProvider, token::TokenResponse};
+pub use oauth_toolkit::{loopback::CapturedCode, providers::MailProvider, token::TokenResponse};
 use tracing::instrument;
 
 use crate::{
@@ -60,6 +60,10 @@ fn secret_set(set: oauth_toolkit::token::TokenSet) -> TokenSet {
 }
 
 /// A started flow: the authorization URL plus the capture handle.
+///
+/// `AuthorizationFlow`'s capture handle yields only the authorization
+/// code; use [`start_flow_captured`] when the caller also needs the PKCE
+/// verifier and redirect port (i.e. to complete the flow server-side).
 pub struct AuthorizationFlow {
     /// URL the user opens in a browser.
     pub url: String,
@@ -93,6 +97,92 @@ pub async fn start_flow(
             .map_err(CryptoError::from)
     });
     Ok((AuthorizationFlow { url }, handle))
+}
+
+/// A started flow that keeps its server-side state: the URL plus a capture
+/// handle yielding the full [`CapturedCode`] (code, PKCE verifier, redirect
+/// port) so the caller can complete the exchange.
+pub struct CapturingFlow {
+    /// URL the user opens in a browser.
+    pub url: String,
+    /// Single-use `state` keying the flow end-to-end (browser echo →
+    /// capture validation → engine-side pending map).
+    pub state: String,
+    /// Loopback capture handle: resolves with the full captured redirect.
+    pub handle: tokio::task::JoinHandle<CryptoResult<CapturedCode>>,
+}
+
+/// [`start_flow`] for server-side completion: additionally exposes the
+/// single-use `state` and yields the PKCE verifier + redirect port
+/// alongside the code, which `exchange_code` requires.
+///
+/// # Errors
+/// [`CryptoError::OAuth`] on loopback bind failure.
+#[instrument(skip_all)]
+pub async fn start_flow_captured(
+    provider: &MailProvider,
+    login_hint: Option<String>,
+    timeout: Duration,
+) -> CryptoResult<CapturingFlow> {
+    let flow = oauth_toolkit::loopback::LoopbackFlow::start_for_provider(
+        provider,
+        login_hint.as_deref(),
+        timeout,
+    )?;
+    let url = flow.authorization_url().to_owned();
+    let state = flow.state().to_owned();
+    let handle =
+        tokio::task::spawn_blocking(move || flow.wait_for_code().map_err(CryptoError::from));
+    Ok(CapturingFlow { url, state, handle })
+}
+
+/// Canonical JSON serialization of an exchanged token set, for the
+/// protocol-surface handoff (engine → frontend → `AddAccount`/
+/// `UpdateAccount` keyring path). The refresh token is stored even when
+/// the provider omitted it (`""` → [`parse_token_set`] keeps it `Some`);
+/// callers that require a live refresh token should reject empty values.
+///
+/// # Errors
+/// [`CryptoError::OAuth`] when JSON serialization fails (cannot happen for
+/// the fixed field set, but the error type has no infallible variant).
+pub fn serialize_token_set(set: &TokenSet) -> CryptoResult<String> {
+    let mut out = String::with_capacity(256);
+    out.push_str("{\"access_token\":");
+    let access = set.access_token.expose();
+    out.push_str(
+        &serde_json::to_string(access)
+            .map_err(|e| CryptoError::OAuth(format!("serialize: {e}")))?,
+    );
+    out.push_str(",\"refresh_token\":");
+    let refresh = set.refresh_token.as_ref().map_or("", SecretString::expose);
+    out.push_str(
+        &serde_json::to_string(refresh)
+            .map_err(|e| CryptoError::OAuth(format!("serialize: {e}")))?,
+    );
+    out.push_str(",\"expires_at\":");
+    out.push_str(&set.expires_at.to_string());
+    out.push('}');
+    Ok(out)
+}
+
+/// Parses a token-set blob produced by [`serialize_token_set`].
+///
+/// # Errors
+/// [`CryptoError::OAuth`] when the blob is not a serialized token set.
+pub fn parse_token_set(json: &str) -> CryptoResult<TokenSet> {
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        access_token: String,
+        refresh_token: String,
+        expires_at: i64,
+    }
+    let raw: Raw =
+        serde_json::from_str(json).map_err(|e| CryptoError::OAuth(format!("token set: {e}")))?;
+    Ok(TokenSet {
+        access_token: SecretString::new(raw.access_token),
+        refresh_token: Some(SecretString::new(raw.refresh_token)),
+        expires_at: raw.expires_at,
+    })
 }
 
 /// Exchanges an authorization code for tokens (`code_verifier` is the PKCE
@@ -178,30 +268,38 @@ pub fn provider_from_env(
 ) -> CryptoResult<MailProvider> {
     let client_id =
         std::env::var("KESTREL_OAUTH2_CLIENT_ID").unwrap_or_else(|_| "kestrel-desktop".into());
-    if let Ok(token_url) = std::env::var("KESTREL_OAUTH2_TOKEN_URL") {
-        return Ok(MailProvider {
-            auth_url: std::env::var("KESTREL_OAUTH2_AUTH_URL")
-                .unwrap_or_else(|_| token_url.clone()),
-            token_url,
-            client_id,
-            imap_scopes: std::env::var("KESTREL_OAUTH2_IMAP_SCOPES")
-                .map(|s| s.split(',').map(str::to_owned).collect())
-                .unwrap_or_default(),
-            smtp_scopes: Vec::new(),
-            extra_scopes: std::env::var("KESTREL_OAUTH2_EXTRA_SCOPES").map_or_else(
-                |_| vec!["offline_access".into()],
-                |s| s.split(',').map(str::to_owned).collect(),
-            ),
-        });
+    let generic = MailProvider {
+        auth_url: std::env::var("KESTREL_OAUTH2_AUTH_URL").unwrap_or_default(),
+        token_url: std::env::var("KESTREL_OAUTH2_TOKEN_URL").unwrap_or_default(),
+        client_id,
+        imap_scopes: std::env::var("KESTREL_OAUTH2_IMAP_SCOPES")
+            .map(|s| s.split(',').map(str::to_owned).collect())
+            .unwrap_or_default(),
+        smtp_scopes: Vec::new(),
+        extra_scopes: std::env::var("KESTREL_OAUTH2_EXTRA_SCOPES").map_or_else(
+            |_| vec!["offline_access".into()],
+            |s| s.split(',').map(str::to_owned).collect(),
+        ),
+    };
+    if !generic.token_url.is_empty() {
+        return Ok(generic);
+    }
+    if matches!(
+        provider,
+        kestrel_core::protocol::Provider::Generic | kestrel_core::protocol::Provider::Jmap
+    ) && !generic.auth_url.is_empty()
+    {
+        // A self-hosted IdP configured for a provider without a preset.
+        return Ok(generic);
     }
     Ok(match provider {
-        kestrel_core::protocol::Provider::Gmail => MailProvider::gmail(&client_id),
+        kestrel_core::protocol::Provider::Gmail => MailProvider::gmail(&generic.client_id),
         kestrel_core::protocol::Provider::Outlook => {
             let tenant = std::env::var("KESTREL_OAUTH2_TENANT").unwrap_or_else(|_| "common".into());
-            MailProvider::outlook(&client_id, &tenant)
+            MailProvider::outlook(&generic.client_id, &tenant)
         }
-        kestrel_core::protocol::Provider::Yahoo => MailProvider::yahoo(&client_id),
-        kestrel_core::protocol::Provider::Fastmail => MailProvider::fastmail(&client_id),
+        kestrel_core::protocol::Provider::Yahoo => MailProvider::yahoo(&generic.client_id),
+        kestrel_core::protocol::Provider::Fastmail => MailProvider::fastmail(&generic.client_id),
         _ => {
             return Err(CryptoError::OAuth(
                 "provider does not support OAuth2".into(),

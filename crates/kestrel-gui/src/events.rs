@@ -55,6 +55,14 @@ impl ForwardedEvent {
             EngineEvent::ServiceDegraded { service, error, .. } => {
                 app.set_status_text(format!("degraded: {service}: {error}").into());
             }
+            EngineEvent::OAuth2FlowCompleted {
+                result: Err(error), ..
+            } => {
+                // Success is surfaced by the setup wizard's completion
+                // watcher (which links the account); failures here catch
+                // flows started outside the wizard.
+                show_toast(app, &format!("sign-in failed: {error}"), "error");
+            }
             EngineEvent::RemoteContentBlocked { count, .. } => {
                 app.set_status_text(format!("{count} remote items blocked").into());
             }

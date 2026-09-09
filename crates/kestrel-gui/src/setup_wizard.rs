@@ -596,15 +596,25 @@ fn wire_oauth2_flow(state: &GuiState, app: &crate::AppWindow) {
                         if let Err(e) = open::that(&url) {
                             tracing::warn!("failed to open browser: {e}");
                         }
-                        slint::invoke_from_event_loop(move || {
-                            if let Some(app) = w2.upgrade() {
-                                app.set_setup_testing_status(
-                                    "Waiting for browser authentication...".into(),
-                                );
-                                app.set_setup_busy(false);
-                            }
-                        })
-                        .ok();
+                        {
+                            let w3 = w2.clone();
+                            slint::invoke_from_event_loop(move || {
+                                if let Some(app) = w3.upgrade() {
+                                    app.set_setup_testing_status(
+                                        "Waiting for browser authentication...".into(),
+                                    );
+                                    app.set_setup_busy(false);
+                                }
+                            })
+                            .ok();
+                        }
+                        // Completion half (#28): the engine captures the
+                        // redirect and exchanges the code autonomously;
+                        // this watcher picks up the resulting event and
+                        // links the exchanged credential set to the
+                        // account through `AddAccount` (the keyring path
+                        // that also seeds the refresh worker's slot).
+                        spawn_oauth2_completion_watcher(h2, w2, provider, email_str);
                     }
                     Ok(Reply::Err(e)) => {
                         let msg = e.user_message();
@@ -627,6 +637,111 @@ fn wire_oauth2_flow(state: &GuiState, app: &crate::AppWindow) {
                     }
                 }
             });
+        });
+    });
+}
+
+/// Watches for `OAuth2FlowCompleted` after a wizard-initiated flow and
+/// finishes account linking: retrieve the token set (single-use) via
+/// `CompleteOAuth2Flow`, then `AddAccount` with `auth_kind = "oauth2"`.
+/// Only this thread completes wizard flows — the event itself never
+/// carries token material, and the retrieval is single-use.
+fn spawn_oauth2_completion_watcher(
+    handle: kestrel_engine::EngineHandle,
+    w: slint::Weak<crate::AppWindow>,
+    provider: kestrel_core::protocol::Provider,
+    email: String,
+) {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async move {
+            let mut events = handle.events();
+            // One flow at a time from the wizard; wait up to 10 minutes
+            // (the capture server's own timeout is 5 minutes).
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_mins(10);
+            let mut state = String::new();
+            let mut finished = false;
+            while tokio::time::Instant::now() < deadline {
+                let Ok(Ok(ev)) =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await
+                else {
+                    continue;
+                };
+                if let kestrel_core::protocol::EngineEvent::OAuth2FlowCompleted {
+                    state: flow_state,
+                    result,
+                } = ev
+                {
+                    state = flow_state;
+                    finished = result.is_ok();
+                    break;
+                }
+            }
+            if !finished {
+                let msg = if state.is_empty() {
+                    "sign-in timed out".to_string()
+                } else {
+                    "sign-in failed".to_string()
+                };
+                slint::invoke_from_event_loop(move || {
+                    if let Some(app) = w.upgrade() {
+                        app.set_setup_error(msg.into());
+                    }
+                })
+                .ok();
+                return;
+            }
+            // Retrieve the exchanged credential set (single-use).
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = handle
+                .commands
+                .send(Command {
+                    id: kestrel_core::ids::RequestId::from_uuid(uuid::Uuid::now_v7()),
+                    origin: FrontendKind::Gui,
+                    payload: CommandPayload::CompleteOAuth2Flow { state, reply: tx },
+                })
+                .await;
+            let Ok(Reply::OAuthTokens(tokens)) = rx.await else {
+                slint::invoke_from_event_loop(move || {
+                    if let Some(app) = w.upgrade() {
+                        app.set_setup_error("sign-in could not be completed".into());
+                    }
+                })
+                .ok();
+                return;
+            };
+            // Link the account (upserts by email — this is also the
+            // re-auth path for an existing account in NeedsReauth).
+            let mut config = provider_preset(&provider, &email);
+            config.auth_kind = "oauth2".into();
+            config.username = Some(config.email.clone());
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = handle
+                .commands
+                .send(Command {
+                    id: kestrel_core::ids::RequestId::from_uuid(uuid::Uuid::now_v7()),
+                    origin: FrontendKind::Gui,
+                    payload: CommandPayload::AddAccount {
+                        config,
+                        password: tokens,
+                        reply: tx,
+                    },
+                })
+                .await;
+            let linked = matches!(rx.await, Ok(Reply::Accounts(_)));
+            slint::invoke_from_event_loop(move || {
+                if let Some(app) = w.upgrade() {
+                    if linked {
+                        app.set_setup_testing_status("Account connected".into());
+                        app.set_show_setup(false);
+                        app.set_status_text("OAuth2 account connected".into());
+                    } else {
+                        app.set_setup_error("could not save the account".into());
+                    }
+                    app.set_setup_busy(false);
+                }
+            })
+            .ok();
         });
     });
 }
