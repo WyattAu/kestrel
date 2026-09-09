@@ -6,7 +6,9 @@ use crate::{
     error::KestrelError,
     ids::{AccountId, BlobHash, FolderId, MessageId, OutboxId},
     mime::ParsedMessage,
-    protocol::{Address, FolderRole, FolderSummary, MessagePage, MessageView, SortSpec, Window},
+    protocol::{
+        Address, FlagOp, FolderRole, FolderSummary, MessagePage, MessageView, SortSpec, Window,
+    },
 };
 
 /// New-folder payload.
@@ -138,6 +140,15 @@ pub trait MailStore: Send + Sync {
     /// # Errors
     /// Storage failure.
     async fn ingest_batch(&self, batch: IngestBatch) -> Result<IngestStats, KestrelError>;
+    /// Mirrors `set_flags`: applies a flag mutation to a set of messages
+    /// (used by the sync engine to persist CHANGEDSINCE flag deltas).
+    /// # Errors
+    /// Storage failure.
+    async fn set_flags(
+        &self,
+        messages: Vec<MessageId>,
+        op: FlagOp,
+    ) -> Result<Vec<MessageId>, KestrelError>;
     /// Mirrors `list_messages`.
     /// # Errors
     /// Storage failure.

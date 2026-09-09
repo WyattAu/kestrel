@@ -219,6 +219,12 @@ impl Store {
     }
 
     /// Persists sync cursors for a folder.
+    ///
+    /// `uid_validity = 0` is a keep-sentinel (matches `highest_modseq: None`):
+    /// callers that only advance one cursor must not clobber the other.
+    /// Clobbering `uid_validity` to 0 previously disabled UIDVALIDITY
+    /// reconciliation for that folder until the next full sync (the
+    /// reconciliation branch requires a non-zero stored value).
     pub(crate) async fn update_sync_cursors(
         &self,
         folder: FolderId,
@@ -226,7 +232,8 @@ impl Store {
         highest_modseq: Option<u64>,
     ) -> StorageResult<()> {
         sqlx::query!(
-            "UPDATE folders SET uid_validity = ?2,
+            "UPDATE folders SET
+                    uid_validity = CASE WHEN ?2 = 0 THEN uid_validity ELSE ?2 END,
                     highest_modseq = COALESCE(?3, highest_modseq)
              WHERE id = ?1",
             folder.to_string(),

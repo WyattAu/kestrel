@@ -4,7 +4,7 @@
 use kestrel_core::{
     error::KestrelError,
     ids::{AccountId, BlobHash, FolderId, MessageId, OutboxId},
-    protocol::{ConnectionState, MessageView, SortSpec, Window},
+    protocol::{ConnectionState, FlagOp, MessageView, SortSpec, Window},
     store_model::{
         FolderRow, IngestBatch, IngestStats, MailStore, NewFolder, OutboxRow, SnoozeEntry,
     },
@@ -31,6 +31,14 @@ impl MailStore for StorageHandle {
 
     async fn ingest_batch(&self, batch: IngestBatch) -> Result<IngestStats, KestrelError> {
         StorageHandle::ingest_batch(self, batch).await
+    }
+
+    async fn set_flags(
+        &self,
+        messages: Vec<MessageId>,
+        op: FlagOp,
+    ) -> Result<Vec<MessageId>, KestrelError> {
+        StorageHandle::set_flags(self, messages, op).await
     }
 
     async fn list_messages(

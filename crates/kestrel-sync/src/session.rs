@@ -254,7 +254,55 @@ impl ImapSession {
         let mut session = Box::pin(Self::connect_transport(params)).await?;
         Box::pin(session.authenticate(params)).await?;
         Box::pin(session.refresh_capabilities()).await?;
+        Box::pin(session.enable_extensions()).await?;
         Ok(session)
+    }
+
+    /// ENABLEs the RFC 5161/7162 extensions we act on (`sync-engine.md` §6).
+    ///
+    /// Must run after authentication and before any SELECT: servers only
+    /// report `HIGHESTMODSEQ` on SELECT once CONDSTORE is enabled, and the
+    /// sync engine's CHANGEDSINCE flag-delta path gates on that cursor.
+    async fn enable_extensions(&mut self) -> SyncResult<()> {
+        use imap_next::imap_types::extensions::enable::CapabilityEnable;
+
+        let mut to_enable: Vec<CapabilityEnable<'static>> = Vec::new();
+        if self.has_capability("CONDSTORE") {
+            to_enable.push(CapabilityEnable::CondStore);
+        }
+        if self.has_capability("QRESYNC") {
+            // QRESYNC's ENABLE form carries the (uidvalidity, modseq) pair
+            // from the last session; 0-sentinel is invalid per RFC 7162, so
+            // the initial enable is parameterless and reconnection uses
+            // SELECT ... QRESYNC with stored cursors.
+            to_enable.push(CapabilityEnable::try_from("QRESYNC").map_err(|e| {
+                SyncError::Protocol(format!("static capability atom invalid: {e:?}"))
+            })?);
+        }
+        if to_enable.is_empty() {
+            return Ok(());
+        }
+        let capabilities =
+            imap_next::imap_types::core::Vec1::try_from(to_enable).map_err(|_| {
+                SyncError::Protocol("capability list empty after capability check".into())
+            })?;
+        let outcome = self
+            .execute(
+                CommandBody::Enable { capabilities },
+                Duration::from_secs(30),
+            )
+            .await?;
+        if outcome.is_ok() {
+            tracing::debug!("ENABLE accepted");
+        } else {
+            // Non-fatal: the server may accept the capability without
+            // ENABLE semantics; delta paths degrade to the windowed scan.
+            tracing::debug!(
+                status = %outcome.status_summary(),
+                "ENABLE rejected; continuing without enabled extensions"
+            );
+        }
+        Ok(())
     }
 
     async fn connect_transport(params: &ConnectParams) -> SyncResult<Self> {

@@ -17,7 +17,7 @@ use kestrel_core::{
     config::Config,
     ids::AccountId,
     mime::{MimeParser as _, StalwartParser},
-    protocol::{ConnectionState, EngineEvent, Flag as CoreFlag, FolderDelta, FolderRole},
+    protocol::{ConnectionState, EngineEvent, Flag as CoreFlag, FlagOp, FolderDelta, FolderRole},
     sanitizer::sanitize_terminal_text,
     store_model::{FolderRow, IngestBatch, IngestMessage, MailStore, NewFolder},
 };
@@ -502,9 +502,18 @@ impl SyncService {
                 let mut changed: Vec<kestrel_core::ids::MessageId> = Vec::new();
                 for data in &outcome.data {
                     for u in Unsolicited::from_data(data) {
-                        if let Unsolicited::FetchFlags { uid, .. } = u
+                        if let Unsolicited::FetchFlags { uid, flags } = u
                             && let Some(id) = self.message_by_uid(folder.id, uid).await
                         {
+                            // Persist the delta: the server's FETCH (FLAGS)
+                            // carries the full current set, so REPLACE mirrors
+                            // it exactly (sync-engine.md §6).
+                            let core_flags: Vec<CoreFlag> =
+                                flags.iter().filter_map(|f| parse_flag(f)).collect();
+                            let _ = self
+                                .storage
+                                .set_flags(vec![id], FlagOp::Set(core_flags))
+                                .await;
                             changed.push(id);
                         }
                     }
@@ -624,6 +633,19 @@ impl SyncService {
 
 fn next_bound(uid_next: u32) -> u32 {
     uid_next.saturating_sub(1).max(1)
+}
+
+/// Maps a wire flag string (as produced by `Unsolicited::FetchFlags`) to a
+/// core flag; unknown/keyword flags are ignored.
+fn parse_flag(wire: &str) -> Option<CoreFlag> {
+    match wire {
+        "\\Seen" => Some(CoreFlag::Seen),
+        "\\Answered" => Some(CoreFlag::Answered),
+        "\\Flagged" => Some(CoreFlag::Flagged),
+        "\\Deleted" => Some(CoreFlag::Deleted),
+        "\\Draft" => Some(CoreFlag::Draft),
+        _ => None,
+    }
 }
 
 fn list_command() -> CommandBody<'static> {

@@ -62,11 +62,16 @@ Issue numbers refer to the GitHub backlog (phase/epic labels). The
 `protocol_surface_matches_documentation` test in `kestrel-core` guards
 `docs/message-protocol.md` drift at compile time.
 
-Phase-2 status note (post v0.1.0): the docker-gated integration suite
-(compose Dovecot/GreenMail/Radicale) is green in CI, but three exit
-criteria lack integration coverage — outbox restart-survival (#21),
-`UIDVALIDITY` reconciliation (#22), and QRESYNC/CONDSTORE deltas (#23).
-Those three tests are the remaining work for the phase-2 milestone.
+Phase-2 status note (post v0.1.0): all three sync exit criteria now have
+docker-gated integration coverage in `crates/kestrel-sync/tests/exit_gates.rs`
+— outbox restart-survival (#21), `UIDVALIDITY` reconciliation (#22), and
+QRESYNC/CONDSTORE deltas (#23) — and the full integration suite (18 tests)
+is green. Writing them surfaced and fixed three production bugs: `ENABLE
+CONDSTORE/QRESYNC` was never sent (the delta path was dead code), flag
+deltas were emitted but never persisted, and `update_sync_cursors`
+clobbered stored `UIDVALIDITY` to 0, disabling reconciliation. Remaining
+for the phase-2 exit: the 7-day unattended token-refresh soak (#25) and the
+non-CONDSTORE flag-pass fallback (#24).
 
 ## Definition of "phase done"
 
