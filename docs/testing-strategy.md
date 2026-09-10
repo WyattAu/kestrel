@@ -165,7 +165,8 @@ After triaging a crash:
   10k-message folder through the real storage+index pipeline, waits for
   the pipeline to drain, and asserts idle RSS stays under the pre-load
   baseline + 25 MB idle SLA (idle-after-load is the SLA; idle-after-empty
-  is trivial).
+  is trivial). Docker-independent but slow and RSS-sensitive, so it runs
+  in the nextest `integration` profile alongside the other exit gates.
 
 ## 6. SLA benchmarks (engineering-standards §5 mapping)
 

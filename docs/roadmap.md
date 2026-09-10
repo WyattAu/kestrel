@@ -21,13 +21,21 @@ task lists here.
 |-------|-----------|--------|-----------------------------------|---------------|
 | **1 — Core storage & parsing** | `phase-1` | **In progress — implementation landed; exit gates run in CI** | `kestrel-core` types & protocol types, SQLite schema + migrations (ADR 0003, `docs/schema.md`), `MimeParser` adapter (ADR 0002), Tantivy indexing pipeline, threading, blob CAS + GC | Ingestion benchmark ≥ 800 msgs/sec (target 1,500); fuzz corpus green; schema + parser crates reviewed against threat model §4 |
 | **2 — Sync engine** | `phase-2` | **Code present ahead of milestone (see “Known gaps” below)** | IMAP `FETCH`/`IDLE`/`STORE` via `imap-flow`/`imap-next` (ADR 0005/0010), QRESYNC/CONDSTORE deltas, `UIDVALIDITY` reconciliation, SMTP sender, OAuth2 loopback + PKCE, outbox with backoff, credential service (`docs/sync-engine.md`); JMAP sync service also landed early | Offline-first flows pass integration suite (Dovecot/Greenmail); outbox survives restart; token refresh unattended for 7 days |
-| **3 — TUI MVP** | `phase-3` | **MVP implemented ahead of milestone; cold-start SLA gate live in CI** | `kestrel-tui`: 3-pane + focus mode, vi keys, OSC 8, `$EDITOR` compose, Markdown → `multipart/alternative`, fuzzy search | Cold start < 50 ms (enforced in-process by `kestrel-tui/src/sla.rs` via the startup harness `--sla` mode; the process-level p50 cannot see it — wrapper boot + `/proc` discovery ≈300 ms on CI); full read/ reply/ archive loop usable daily; memory < 25 MB idle |
+| **3 — TUI MVP** | `phase-3` | **MVP implemented ahead of milestone; all four exit gates (#27) enforced in CI** | `kestrel-tui`: 3-pane + focus mode, vi keys, OSC 8, `$EDITOR` compose, Markdown → `multipart/alternative`, fuzzy search | Cold start < 50 ms (enforced in-process by `kestrel-tui/src/sla.rs` via the startup harness `--sla` mode; the process-level p50 cannot see it — wrapper boot + `/proc` discovery ≈300 ms on CI); full read/ reply/ archive loop usable daily (`daily_loop.rs` journey gate, server-side asserts); memory < 25 MB idle after load (`memory_under_load.rs` 10k-ingest gate); keypress→paint p50 < 16 ms (sampled by the journey gate) |
 | **4 — GUI MVP** | `phase-4` | **Shell + viewport implemented; security matrix partial** | `kestrel-gui`: Slint shell (ADR 0001), sandboxed `wry` viewport + `kestrel-cid://`, composer, tray, notifications, theme | Threat-model §7 webview test matrix green; cold start < 200 ms; CSP verified on every load |
 | **5 — Hardening** | `phase-5` | **Partial — OpenPGP/S-MIME/JMAP landed early** | Broken-MIME stress corpora, JMAP (RFC 8620/8621), OpenPGP via Sequoia (sign/encrypt), S/MIME (CMS) sign/verify, performance polish to SLA targets | All SLA benchmarks at target (not just hard limit); JMAP account E2E; PGP round-trip interop tests |
 
 ## Known gaps (docs vs. shipped code)
 
 Closed this cycle (Wave 0 + CI verification):
+- Local mutations reach the server: flag/move ops are enqueued in a
+  `push_queue` (cache.db migration 0005) and drained per sync cycle via
+  UID STORE/MOVE with COPYUID reconciliation, with an immediate
+  sync-service wake after enqueue (`docs/sync-engine.md` §5). IDLE now
+  rotates bounded slices across all folders (`sync.idle_slice_secs`, 10 s
+  default) with a delta pass per slice, so push discovery latency is
+  bounded for every folder — previously only the last-SELECTed mailbox
+  received server pushes.
 - Per-account services are supervised with restart-on-panic
   (`ServiceDegraded`), `Command::TriggerSync` is wired end-to-end
   (per-account `Notify` in the sync services), `RemoveAccount`/shutdown stop

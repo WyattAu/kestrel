@@ -11,6 +11,9 @@
 //! harness (~10 MB measured) plus the 25 MB idle-SLA headroom, so the gate
 //! fails on *leaks/unbounded caches* (the failure class it exists for) —
 //! not on a harness floor the app doesn't control.
+//!
+//! Slow and RSS-sensitive, so it lives in the nextest `integration`
+//! profile (CI integration job), like the other phase exit gates.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,7 +27,8 @@
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn memory_under_load_10k_idle_rss() {
+#[ignore = "phase-3 exit gate: slow + RSS-sensitive, runs in the nextest integration profile"]
+async fn integration_memory_under_load_10k_idle_rss() {
     use std::sync::Arc;
 
     use kestrel_core::{
