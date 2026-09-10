@@ -159,66 +159,73 @@ impl SyncService {
             .iter()
             .any(|h| h.eq_ignore_ascii_case(&self.params.host));
         if idle_supported && !poll_only {
+            // IDLE slices rotate across all folders with a delta pass
+            // between slices: unsolicited EXISTS/EXPUNGE pushes only
+            // arrive for the *selected* mailbox (IMAP has no multi-folder
+            // push), and mail appended between slices surfaces in the
+            // next delta rather than as a push. Idling forever on one
+            // folder left every other folder blind until the idle
+            // timeout. Each slice is bounded (`idle_slice_secs`), so the
+            // discovery latency for any folder is ≤ one slice + delta.
+            //
+            // The first rotation starts with an immediate full delta (no
+            // waiting for the first slice to elapse): the initial cycle's
+            // hierarchy pass may already be seconds behind the server, and
+            // the delta pass after each slice below then keeps the bound.
             self.emit_state(ConnectionState::Idle).await;
-            // Re-select the INBOX before idling: unsolicited EXISTS/EXPUNGE
-            // pushes only arrive for the *selected* mailbox, and the delta
-            // pass above left the session on the last folder of the list.
-            // Idling on, e.g., `Sent` made new INBOX mail invisible to the
-            // push path until the 29-minute idle timeout (seen by the
-            // daily-loop gate on a fresh volume). Selecting INBOX — the
-            // folder a mail client is woken for in practice — makes IDLE
-            // pushes wake the delta pass; other folders are covered by the
-            // poll fallback below and the per-cycle full pass.
-            let inbox_name = folders
-                .iter()
-                .find(|f| f.remote_name.eq_ignore_ascii_case("INBOX"))
-                .map(|f| f.remote_name.clone());
-            if let Some(inbox_name) = &inbox_name {
-                let mailbox = Mailbox::try_from(inbox_name.clone())
-                    .map_err(|e| SyncError::Protocol(format!("mailbox name: {e:?}")))?;
-                let outcome = session
-                    .execute(
-                        CommandBody::Select {
-                            mailbox,
-                            parameters: Vec::new(),
-                        },
-                        Duration::from_mins(1),
-                    )
-                    .await?;
-                if !outcome.is_ok() {
-                    tracing::warn!(folder = %inbox_name, "pre-idle INBOX SELECT failed");
-                }
-            }
+            let slice = Duration::from_secs(self.config.sync.idle_slice_secs);
             loop {
-                if cancel.is_cancelled() {
-                    session.logout().await;
-                    return Ok(());
-                }
-                let idle_for = Duration::from_secs(60 * self.config.sync.idle_timeout_mins);
-                let woke = tokio::select! {
-                    res = session.idle(idle_for) => res?,
-                    // `TriggerSync`: leave IDLE so the run loop starts a
-                    // fresh connect → sync cycle immediately.
-                    () = self.trigger.notified() => {
+                // Rotate through the stored folders; the list may have
+                // changed since the hierarchy pass. INBOX first: it is the
+                // folder pushes matter most for.
+                let mut folders = self.list_stored_folders().await;
+                folders.sort_by_key(|f| !f.remote_name.eq_ignore_ascii_case("INBOX"));
+                for folder in &folders {
+                    if cancel.is_cancelled() {
                         session.logout().await;
                         return Ok(());
                     }
-                };
-                if cancel.is_cancelled() {
-                    session.logout().await;
-                    return Ok(());
-                }
-                if !woke.is_empty() {
-                    self.emit_state(ConnectionState::Syncing).await;
-                    // Re-run the folders touched by wake signals (all — the
-                    // unsolicited data does not identify the folder).
-                    let folders = self.list_stored_folders().await;
-                    for folder in folders {
+                    let mailbox = Mailbox::try_from(folder.remote_name.clone())
+                        .map_err(|e| SyncError::Protocol(format!("mailbox name: {e:?}")))?;
+                    let outcome = session
+                        .execute(
+                            CommandBody::Select {
+                                mailbox,
+                                parameters: Vec::new(),
+                            },
+                            Duration::from_mins(1),
+                        )
+                        .await?;
+                    if !outcome.is_ok() {
+                        tracing::warn!(folder = %folder.remote_name, "pre-idle SELECT failed");
+                        continue;
+                    }
+                    let woke = tokio::select! {
+                        res = session.idle(slice) => res?,
+                        // `TriggerSync`: leave IDLE so the run loop starts a
+                        // fresh connect → sync cycle immediately.
+                        () = self.trigger.notified() => {
+                            session.logout().await;
+                            return Ok(());
+                        }
+                    };
+                    if cancel.is_cancelled() {
+                        session.logout().await;
+                        return Ok(());
+                    }
+                    if !woke.is_empty() {
+                        self.emit_state(ConnectionState::Syncing).await;
+                    }
+                    // Delta pass after EVERY slice: pushes don't identify
+                    // the folder, and appends that landed between slices
+                    // only surface here. Cheap under CONDSTORE/QRESYNC.
+                    let all = self.list_stored_folders().await;
+                    for folder in &all {
                         if cancel.is_cancelled() {
                             session.logout().await;
                             return Ok(());
                         }
-                        self.sync_folder(&mut session, &folder).await?;
+                        self.sync_folder(&mut session, folder).await?;
                     }
                     self.emit_state(ConnectionState::Idle).await;
                 }

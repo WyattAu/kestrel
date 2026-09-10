@@ -193,6 +193,13 @@ pub struct SyncConfig {
     /// IDLE re-issue interval; must stay under the common 30 min server
     /// cutoff (sync-engine.md §5).
     pub idle_timeout_mins: u64,
+    /// Per-folder IDLE slice length (seconds). IMAP pushes only reach the
+    /// selected mailbox, so the sync service rotates IDLE across folders
+    /// with a full delta pass after every slice; discovery latency for
+    /// any folder is therefore ≤ slice + delta. Longer slices mean less
+    /// SELECT chatter but proportionally slower discovery in folders that
+    /// are not currently selected.
+    pub idle_slice_secs: u64,
     /// How many recent bodies per folder to prefetch in the background
     /// (sync-engine.md §4).
     pub body_prefetch_recent: usize,
@@ -209,6 +216,7 @@ impl Default for SyncConfig {
         Self {
             poll_interval_secs: 120,
             idle_timeout_mins: 29,
+            idle_slice_secs: 10,
             body_prefetch_recent: 200,
             idle_poll_only_hosts: Vec::new(),
             connect_attempts: 3,
