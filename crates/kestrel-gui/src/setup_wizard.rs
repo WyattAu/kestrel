@@ -43,15 +43,10 @@ pub(crate) fn install(state: &GuiState) {
 fn wire_reauth_account(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let emails = Arc::clone(&state.account_emails_cache);
+    let accounts_cache = Arc::clone(&state.accounts);
     app.on_reauth_account(move |idx| {
         let idx = usize::try_from(idx).unwrap_or(0);
-        let Some(email) = emails
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(idx)
-            .cloned()
-        else {
+        let Some(email) = accounts_cache.email_at(idx) else {
             return;
         };
         let provider = detect_provider(&email);
@@ -137,8 +132,12 @@ fn start_oauth2_flow_for(
 // ────────────────────── helpers ──────────────────────
 
 /// Fetch the full folder list for all accounts and populate the UI.
-async fn fetch_all_folders(state: &GuiState) -> Option<Vec<FolderId>> {
-    let h = &state.handle;
+async fn fetch_all_folders(
+    handle: &kestrel_engine::EngineHandle,
+    accounts: &crate::state::AccountCache,
+    weak: slint::Weak<crate::AppWindow>,
+) -> Option<Vec<FolderId>> {
+    let h = handle;
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = h
         .commands
@@ -148,33 +147,24 @@ async fn fetch_all_folders(state: &GuiState) -> Option<Vec<FolderId>> {
             payload: CommandPayload::ListAccounts { reply: tx },
         })
         .await;
-    let Reply::Accounts(accounts) = rx.await.ok()? else {
+    let Reply::Accounts(accts) = rx.await.ok()? else {
         return None;
     };
 
     let mut all_folder_names: Vec<String> = Vec::new();
     let mut all_folder_ids: Vec<FolderId> = Vec::new();
     let mut all_folder_unreads: Vec<i32> = Vec::new();
-    let acct_names: Vec<String> = accounts.iter().map(|a| a.name.clone()).collect();
-    let acct_emails: Vec<String> = accounts.iter().map(|a| a.email.clone()).collect();
+    let acct_names: Vec<String> = accts.iter().map(|a| a.name.clone()).collect();
+    let acct_emails: Vec<String> = accts.iter().map(|a| a.email.clone()).collect();
 
     // Unified Inbox as the first virtual folder.
     all_folder_names.push("Unified Inbox".into());
     all_folder_ids.push(FolderId::from_uuid(uuid::Uuid::nil()));
     all_folder_unreads.push(0);
 
-    {
-        if let Ok(mut cached) = state.account_ids_cache.lock() {
-            *cached = accounts.iter().map(|a| a.id).collect();
-        }
-    }
-    {
-        if let Ok(mut cached) = state.account_emails_cache.lock() {
-            (*cached).clone_from(&acct_emails);
-        }
-    }
+    accounts.replace(accts.iter().map(|a| a.id).collect(), acct_emails.clone());
 
-    for acct in &accounts {
+    for acct in &accts {
         let (ftx, frx) = tokio::sync::oneshot::channel();
         let _ = h
             .commands
@@ -196,12 +186,13 @@ async fn fetch_all_folders(state: &GuiState) -> Option<Vec<FolderId>> {
         }
     }
 
-    let count = accounts.len();
+    let count = accts.len();
     let names_clone = all_folder_names.clone();
     let unreads_clone = all_folder_unreads.clone();
     let acct_colors_clone = acct_emails.clone();
+    let acct_states_clone: Vec<kestrel_core::protocol::ConnectionState> =
+        accts.iter().map(|a| a.state).collect();
 
-    let weak = state.app_weak.clone();
     slint::invoke_from_event_loop(move || {
         if let Some(app) = weak.upgrade() {
             app.set_account_count(i32::try_from(count).unwrap_or(0));
@@ -215,9 +206,9 @@ async fn fetch_all_folders(state: &GuiState) -> Option<Vec<FolderId>> {
                 .collect();
             app.set_account_names(acct_strs.as_slice().into());
             // Reset re-auth badges to the authoritative account states.
-            let reauth: Vec<bool> = accounts
+            let reauth: Vec<bool> = acct_states_clone
                 .iter()
-                .map(|a| a.state == kestrel_core::protocol::ConnectionState::NeedsReauth)
+                .map(|s| *s == kestrel_core::protocol::ConnectionState::NeedsReauth)
                 .collect();
             app.set_account_needs_reauth(reauth.as_slice().into());
             let colors: Vec<slint::Color> = acct_colors_clone
@@ -242,33 +233,17 @@ async fn fetch_all_folders(state: &GuiState) -> Option<Vec<FolderId>> {
 // ────────────────────── initial account check ──────────────────────
 
 fn initial_account_check(state: &GuiState) {
-    let fids = Arc::clone(&state.folder_ids);
-    let state_clone = GuiState {
-        app_weak: state.app_weak.clone(),
-        handle: state.handle.clone(),
-        config: Arc::clone(&state.config),
-        paths: Arc::clone(&state.paths),
-        vp_state: crate::state::SharedViewportState::clone(&state.vp_state),
-        folder_ids: Arc::clone(&state.folder_ids),
-        message_ids: Arc::clone(&state.message_ids),
-        account_ids_cache: Arc::clone(&state.account_ids_cache),
-        account_emails_cache: Arc::clone(&state.account_emails_cache),
-        current_attachment_keys: Arc::clone(&state.current_attachment_keys),
-        current_message_for_attachments: Arc::clone(&state.current_message_for_attachments),
-        current_message_html: Arc::clone(&state.current_message_html),
-        reply_in_reply_to: Arc::clone(&state.reply_in_reply_to),
-        reply_references: Arc::clone(&state.reply_references),
-        pending_compose_attachments: Arc::clone(&state.pending_compose_attachments),
-        unread_count: Arc::clone(&state.unread_count),
-    };
+    let handle = state.handle.clone();
+    let accounts = Arc::clone(&state.accounts);
+    let lists = Arc::clone(&state.lists);
+    let weak = state.app_weak.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async move {
-            if let Some(ids) = fetch_all_folders(&state_clone).await
-                && let Ok(mut f) = fids.lock()
-            {
-                *f = ids;
-            }
+            let Some(ids) = fetch_all_folders(&handle, &accounts, weak).await else {
+                return;
+            };
+            lists.set_folders(ids);
         });
     });
 }
@@ -278,22 +253,16 @@ fn initial_account_check(state: &GuiState) {
 fn wire_select_account(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let fids = Arc::clone(&state.folder_ids);
-    let aids = Arc::clone(&state.account_ids_cache);
+    let lists = Arc::clone(&state.lists);
+    let accounts_cache = Arc::clone(&state.accounts);
     app.on_select_account(move |idx| {
         let idx = usize::try_from(idx).unwrap_or(0);
-        let account_id = {
-            let ids = aids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match ids.get(idx) {
-                Some(id) => *id,
-                None => return,
-            }
+        let Some(account_id) = accounts_cache.id_at(idx) else {
+            return;
         };
         let h = h.clone();
         let w = w.clone();
-        let fids2 = fids.clone();
+        let lists2 = Arc::clone(&lists);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
@@ -341,9 +310,7 @@ fn wire_select_account(state: &GuiState, app: &crate::AppWindow) {
                         }
                     })
                     .ok();
-                    if let Ok(mut f) = fids2.lock() {
-                        *f = all_folder_ids;
-                    }
+                    lists2.set_folders(all_folder_ids);
                 }
             });
         });
@@ -355,9 +322,8 @@ fn wire_select_account(state: &GuiState, app: &crate::AppWindow) {
 fn wire_add_account(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let fids = Arc::clone(&state.folder_ids);
-    let aids = Arc::clone(&state.account_ids_cache);
-    let emails_add = Arc::clone(&state.account_emails_cache);
+    let lists = Arc::clone(&state.lists);
+    let accounts_cache = Arc::clone(&state.accounts);
 
     app.on_add_account(move |display_name, email, password, imap_host, smtp_host| {
         let Some(app) = w.upgrade() else { return };
@@ -401,9 +367,8 @@ fn wire_add_account(state: &GuiState, app: &crate::AppWindow) {
 
         let h2 = h.clone();
         let w2 = w.clone();
-        let fids2 = fids.clone();
-        let aids2 = aids.clone();
-        let emails2 = emails_add.clone();
+        let lists2 = Arc::clone(&lists);
+        let accounts2 = Arc::clone(&accounts_cache);
         let is_editing_clone = is_editing;
         std::thread::spawn(move || {
             let rt = tokio::runtime::Handle::current();
@@ -497,16 +462,8 @@ fn wire_add_account(state: &GuiState, app: &crate::AppWindow) {
                             accts.iter().map(|a| a.name.clone()).collect();
                         let acct_emails: Vec<String> =
                             accts.iter().map(|a| a.email.clone()).collect();
-                        {
-                            if let Ok(mut cached) = aids2.lock() {
-                                *cached = accts.iter().map(|a| a.id).collect();
-                            }
-                        }
-                        {
-                            if let Ok(mut cached) = emails2.lock() {
-                                (*cached).clone_from(&acct_emails);
-                            }
-                        }
+                        accounts2
+                            .replace(accts.iter().map(|a| a.id).collect(), acct_emails.clone());
                         for acct in &accts {
                             let (ftx, frx) = tokio::sync::oneshot::channel();
                             let _ = h2
@@ -576,9 +533,7 @@ fn wire_add_account(state: &GuiState, app: &crate::AppWindow) {
                             }
                         })
                         .ok();
-                        if let Ok(mut f) = fids2.lock() {
-                            *f = all_folder_ids;
-                        }
+                        lists2.set_folders(all_folder_ids);
                     }
                     Ok(Reply::Err(e)) => {
                         let msg = e.user_message();

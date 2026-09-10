@@ -19,15 +19,11 @@ mod setup_wizard;
 mod state;
 mod util;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU32},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use events::ForwardedEvent;
 use kestrel_core::{
     config::Config,
-    ids::{AccountId, FolderId, MessageId},
     paths::Paths,
     protocol::{Command, CommandPayload, FrontendKind, Reply},
 };
@@ -86,28 +82,12 @@ fn main() {
 
     // ── Shared state ──
     let vp_state: SharedViewportState = Arc::new(std::sync::Mutex::new(ViewportState::default()));
-    let folder_ids: Arc<std::sync::Mutex<Vec<FolderId>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let message_ids: Arc<std::sync::Mutex<Vec<MessageId>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let account_ids_cache: Arc<std::sync::Mutex<Vec<AccountId>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let account_emails_cache: Arc<std::sync::Mutex<Vec<String>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let current_attachment_keys: Arc<std::sync::Mutex<Vec<String>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let current_message_for_attachments: Arc<std::sync::Mutex<Option<MessageId>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let current_message_html: Arc<std::sync::Mutex<Option<String>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let reply_in_reply_to: Arc<std::sync::Mutex<Option<String>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let reply_references: Arc<std::sync::Mutex<Vec<String>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
-    let pending_compose_attachments: Arc<
-        std::sync::Mutex<Vec<kestrel_core::protocol::DraftAttachment>>,
-    > = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let unread_count: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let lists = Arc::new(state::ListCaches::default());
+    let accounts_cache = Arc::new(state::AccountCache::default());
+    let message_view = Arc::new(state::MessageView::default());
+    let reply = Arc::new(state::ReplyContext::default());
+    let draft = Arc::new(state::ComposeDraft::default());
+    let unread = Arc::new(state::UnreadCounter::default());
 
     // ── Tokio runtime + engine spawn ──
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -121,8 +101,8 @@ fn main() {
     let ec = Arc::clone(&config);
     let ep = Arc::clone(&paths);
     let _engine_ready = Arc::new(AtomicBool::new(false));
-    let unread_for_thread = Arc::clone(&unread_count);
-    let account_ids_for_events = Arc::clone(&account_ids_cache);
+    let unread_for_thread = Arc::clone(&unread);
+    let account_ids_for_events = Arc::clone(&accounts_cache);
 
     std::thread::spawn(move || {
         rt.block_on(async move {
@@ -170,17 +150,11 @@ fn main() {
         Arc::clone(&config),
         Arc::clone(&paths),
         Arc::clone(&vp_state),
-        Arc::clone(&folder_ids),
-        Arc::clone(&message_ids),
-        Arc::clone(&account_ids_cache),
-        Arc::clone(&account_emails_cache),
-        Arc::clone(&current_attachment_keys),
-        Arc::clone(&current_message_for_attachments),
-        Arc::clone(&current_message_html),
-        Arc::clone(&reply_in_reply_to),
-        Arc::clone(&reply_references),
-        Arc::clone(&pending_compose_attachments),
-        Arc::clone(&unread_count),
+        Arc::clone(&lists),
+        Arc::clone(&accounts_cache),
+        Arc::clone(&message_view),
+        Arc::clone(&reply),
+        Arc::clone(&draft),
     );
 
     // ── Install callback modules ──
@@ -195,7 +169,7 @@ fn main() {
     // ── System tray ──
     #[cfg(feature = "tray")]
     {
-        events::setup_tray(&app, &handle, &unread_count);
+        events::setup_tray(&app, &handle, &unread);
     }
 
     // ── Slint event loop ──

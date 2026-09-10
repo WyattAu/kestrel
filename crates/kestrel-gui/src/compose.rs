@@ -45,9 +45,8 @@ pub(crate) fn install(state: &GuiState) {
 fn wire_compose(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let mids = Arc::clone(&state.message_ids);
-    let rirt = Arc::clone(&state.reply_in_reply_to);
-    let rrefs = Arc::clone(&state.reply_references);
+    let lists = Arc::clone(&state.lists);
+    let reply = Arc::clone(&state.reply);
 
     app.on_compose(move || {
         let selected_idx = {
@@ -55,43 +54,23 @@ fn wire_compose(state: &GuiState, app: &crate::AppWindow) {
             let idx = app_ref.get_selected_msg_idx();
             if idx < 0 {
                 let Some(app) = w.upgrade() else { return };
-                *rirt
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                rrefs
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clear();
+                reply.clear();
                 app.set_show_compose(true);
                 app.set_compose_error(slint::SharedString::default());
                 return;
             }
             usize::try_from(idx).unwrap_or(0)
         };
-        let message_id = {
-            let ids = mids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(id) = ids.get(selected_idx) {
-                *id
-            } else {
-                let Some(app) = w.upgrade() else { return };
-                *rirt
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-                rrefs
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clear();
-                app.set_show_compose(true);
-                app.set_compose_error(slint::SharedString::default());
-                return;
-            }
+        let Some(message_id) = lists.message_at(selected_idx) else {
+            let Some(app) = w.upgrade() else { return };
+            reply.clear();
+            app.set_show_compose(true);
+            app.set_compose_error(slint::SharedString::default());
+            return;
         };
         let h = h.clone();
         let w = w.clone();
-        let rirt2 = rirt.clone();
-        let rrefs2 = rrefs.clone();
+        let reply2 = Arc::clone(&reply);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
@@ -137,30 +116,10 @@ fn wire_compose(state: &GuiState, app: &crate::AppWindow) {
                             format!("{sender} <{sender_email}>")
                         };
                         let compose_subject = format!("Re: {subject}");
-                        {
-                            let mut irt = rirt2
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            *irt = view
-                                .summary
-                                .in_reply_to
-                                .clone()
-                                .or_else(|| view.summary.message_id.clone());
-                        }
-                        {
-                            let mut refs_vec = rrefs2
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            refs_vec.clear();
-                            if let Some(ref irt) = view.summary.in_reply_to {
-                                refs_vec.push(irt.clone());
-                            }
-                            if let Some(ref mid) = view.summary.message_id
-                                && (refs_vec.is_empty() || refs_vec.last() != Some(mid))
-                            {
-                                refs_vec.push(mid.clone());
-                            }
-                        }
+                        reply2.start_reply_from(
+                            view.summary.in_reply_to.clone(),
+                            view.summary.message_id.clone(),
+                        );
                         let compose_cc: String = view
                             .summary
                             .cc
@@ -225,21 +184,21 @@ fn wire_compose_cancel(_state: &GuiState, app: &crate::AppWindow) {
 
 fn wire_image_paste(state: &GuiState, app: &crate::AppWindow) {
     let w = app.as_weak();
-    let atts = Arc::clone(&state.pending_compose_attachments);
+    let draft = Arc::clone(&state.draft);
     app.on_compose_body_pasted({
         let w = w.clone();
         move |mime_hint| {
             let Some(app) = w.upgrade() else { return };
-            let _ = &atts;
+            let _ = &draft;
             #[cfg(feature = "tray")]
             {
                 let mime_str = mime_hint.to_string();
                 match arboard::Clipboard::new() {
                     Ok(mut clipboard) => {
-                        if let Some(img) = clipboard.get_image().ok() {
-                            let width = img.width() as u32;
-                            let height = img.height() as u32;
-                            let bytes = img.as_bytes();
+                        if let Ok(img) = clipboard.get_image() {
+                            let width = img.width;
+                            let height = img.height;
+                            let bytes = img.bytes.clone();
                             let mime = if mime_str.contains("jpeg") || mime_str.contains("jpg") {
                                 "image/jpeg"
                             } else {
@@ -252,9 +211,7 @@ fn wire_image_paste(state: &GuiState, app: &crate::AppWindow) {
                                 mime_type: mime.to_string(),
                                 data: bytes.to_vec(),
                             };
-                            if let Ok(mut list) = atts.lock() {
-                                list.push(attachment);
-                            }
+                            draft.attach(attachment);
                             let mut names: String = app.get_compose_attachment_names().to_string();
                             if !names.is_empty() {
                                 names.push_str(", ");
@@ -468,12 +425,10 @@ fn wire_priority(_state: &GuiState, app: &crate::AppWindow) {
 fn wire_compose_submit(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let aids_compose = Arc::clone(&state.account_ids_cache);
-    let emails_compose = Arc::clone(&state.account_emails_cache);
+    let accounts_cache = Arc::clone(&state.accounts);
     let cfg_compose = Arc::clone(&state.config);
-    let rirt_compose = Arc::clone(&state.reply_in_reply_to);
-    let rrefs_compose = Arc::clone(&state.reply_references);
-    let atts_compose = Arc::clone(&state.pending_compose_attachments);
+    let reply_compose = Arc::clone(&state.reply);
+    let draft_compose = Arc::clone(&state.draft);
 
     app.on_compose_submit(move |to, cc, bcc, subject, body| {
         let Some(app) = w.upgrade() else { return };
@@ -530,15 +485,11 @@ fn wire_compose_submit(state: &GuiState, app: &crate::AppWindow) {
         };
 
         let (account_id, account_email) = {
-            let aids = aids_compose
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let emails = emails_compose
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ids = accounts_cache.ids();
+            let emails = accounts_cache.emails();
             let idx = usize::try_from(app.get_selected_folder_idx()).unwrap_or(0);
-            let account_id = aids.get(idx).copied().unwrap_or_else(|| {
-                aids.first()
+            let account_id = ids.get(idx).copied().unwrap_or_else(|| {
+                ids.first()
                     .copied()
                     .unwrap_or_else(|| AccountId::from_uuid(uuid::Uuid::now_v7()))
             });
@@ -576,20 +527,10 @@ fn wire_compose_submit(state: &GuiState, app: &crate::AppWindow) {
             cc: cc_addrs,
             bcc: bcc_addrs,
             subject: subject.to_string(),
-            in_reply_to: rirt_compose
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
-            references: rrefs_compose
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+            in_reply_to: (reply_compose.headers()).0,
+            references: (reply_compose.headers()).1,
             body_markdown: body_with_sig,
-            attachments: atts_compose
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .drain(..)
-                .collect(),
+            attachments: draft_compose.take_attachments(),
             pgp_sign,
             pgp_encrypt,
             smime_sign: false,
@@ -651,22 +592,12 @@ fn wire_compose_submit(state: &GuiState, app: &crate::AppWindow) {
 fn wire_save_attachment(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let att_keys = Arc::clone(&state.current_attachment_keys);
-    let att_msg = Arc::clone(&state.current_message_for_attachments);
+    let message_view = Arc::clone(&state.message_view);
 
     app.on_save_attachment(move |idx| {
         let idx = usize::try_from(idx).unwrap_or(0);
-        let (part_key, message_id) = {
-            let keys = att_keys
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let msg = att_msg
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match (keys.get(idx), *msg) {
-                (Some(k), Some(m)) => (k.clone(), m),
-                _ => return,
-            }
+        let Some((part_key, message_id)) = message_view.attachment_at(idx) else {
+            return;
         };
         let h = h.clone();
         let w = w.clone();
@@ -734,11 +665,13 @@ fn wire_save_attachment(state: &GuiState, app: &crate::AppWindow) {
     });
 }
 
-fn wire_file_drop(_state: &GuiState, _app: &crate::AppWindow) {
+// The whole body is `tray`-gated, so the params are dead without it.
+#[cfg_attr(not(feature = "tray"), allow(unused_variables))]
+fn wire_file_drop(state: &GuiState, app: &crate::AppWindow) {
     #[cfg(feature = "tray")]
     {
         use kestrel_core::protocol::DraftAttachment;
-        let attachments = Arc::clone(&state.pending_compose_attachments);
+        let draft = Arc::clone(&state.draft);
         app.on_file_dropped({
             let w = app.as_weak();
             move |path_str| {
@@ -756,9 +689,7 @@ fn wire_file_drop(_state: &GuiState, _app: &crate::AppWindow) {
                             mime_type: mime,
                             data,
                         };
-                        if let Ok(mut atts) = attachments.lock() {
-                            atts.push(attachment);
-                        }
+                        draft.attach(attachment);
                         if let Some(app) = w.upgrade() {
                             let mut names: String = app.get_compose_attachment_names().to_string();
                             if !names.is_empty() {
@@ -823,14 +754,12 @@ fn wire_html_view(state: &GuiState, app: &crate::AppWindow) {
 
 fn wire_remote_content(state: &GuiState, app: &crate::AppWindow) {
     let w = app.as_weak();
-    let html_cache = Arc::clone(&state.current_message_html);
+    let message_view = Arc::clone(&state.message_view);
     app.on_toggle_remote_content(move || {
         let Some(app) = w.upgrade() else { return };
-        let raw_html = {
-            let Ok(cache) = html_cache.lock() else { return };
-            cache.clone()
+        let Some(html) = message_view.html() else {
+            return;
         };
-        let Some(html) = raw_html else { return };
         let sanitized = kestrel_core::sanitizer::sanitize_html_body_with_remote(&html, true);
         let wrapped = kestrel_gui::viewport::wrap_html_with_csp(&sanitized.html);
         app.set_preview_body(slint::SharedString::from(wrapped.as_str()));

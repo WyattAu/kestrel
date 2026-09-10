@@ -1,21 +1,25 @@
 //! Engine event forwarding and system-tray setup.
 
-use std::sync::{Arc, atomic::AtomicU32};
+use std::sync::Arc;
 
 use kestrel_core::protocol::EngineEvent;
-#[cfg(feature = "tray")]
+// Tray menu commands are only forwarded where a menu-event loop exists.
+#[cfg(all(feature = "tray", not(target_os = "linux")))]
 use kestrel_core::protocol::{Command, CommandPayload, FrontendKind};
 use kestrel_gui::AppWindow;
 use slint::Model as _;
 
-use crate::util::show_toast;
+use crate::{
+    state::{AccountCache, UnreadCounter},
+    util::show_toast,
+};
 
 /// Wrapper that is `Send`-safe for the engine→GUI event-forwarding thread.
 pub(crate) struct ForwardedEvent(pub EngineEvent);
 
-/// Shared per-account id cache (index-aligned with the sidebar account
-/// list) used to place re-auth badges on the right row.
-pub(crate) type AccountIds = Arc<std::sync::Mutex<Vec<kestrel_core::ids::AccountId>>>;
+/// Account row cache (index-aligned with the sidebar account list) used
+/// to place re-auth badges on the right row.
+pub(crate) type AccountIds = Arc<AccountCache>;
 
 impl ForwardedEvent {
     /// Dispatch an engine event onto the Slint UI thread.
@@ -23,7 +27,7 @@ impl ForwardedEvent {
         self,
         app: &AppWindow,
         _vp: &crate::state::SharedViewportState,
-        unread: &Arc<AtomicU32>,
+        unread: &UnreadCounter,
         account_ids: &AccountIds,
     ) {
         match self.0 {
@@ -39,10 +43,7 @@ impl ForwardedEvent {
                 app.set_total_messages(
                     app.get_total_messages() + i32::try_from(summary.new).unwrap_or(0),
                 );
-                unread.store(
-                    u32::try_from(summary.unread).unwrap_or(u32::MAX),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                unread.set(u32::try_from(summary.unread).unwrap_or(u32::MAX));
                 if summary.new > 0 {
                     let notifications_enabled = app.get_settings_notifications_enabled();
                     if notifications_enabled
@@ -98,12 +99,7 @@ fn update_reauth_badges(
 ) {
     let names = app.get_account_names();
     let count = names.row_count();
-    let row = account_ids
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .position(|id| *id == account)
-        .filter(|r| *r < count);
+    let row = account_ids.row_of(account).filter(|r| *r < count);
     let Some(row) = row else { return };
     let needs = state == kestrel_core::protocol::ConnectionState::NeedsReauth;
     let model = app.get_account_needs_reauth();
@@ -132,7 +128,7 @@ fn update_reauth_badges(
 pub(crate) fn setup_tray(
     app: &AppWindow,
     handle: &kestrel_engine::EngineHandle,
-    unread_count: &Arc<AtomicU32>,
+    unread_count: &UnreadCounter,
 ) {
     use tray_icon::{
         Icon, TrayIconBuilder,
@@ -197,7 +193,6 @@ pub(crate) fn setup_tray(
 
         let gui_weak_menu = app.as_weak();
         let h_menu = handle.clone();
-        let unread = Arc::clone(unread_count);
         MenuEvent::set_event_handler(Some(move |event| {
             if *event.id() == *compose_item.id() {
                 let w = gui_weak_menu.clone();

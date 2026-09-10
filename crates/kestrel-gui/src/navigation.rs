@@ -31,11 +31,11 @@ pub(crate) fn install(state: &GuiState) {
 fn wire_search(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let mids = Arc::clone(&state.message_ids);
+    let lists = Arc::clone(&state.lists);
     app.on_search(move |query| {
         let h = h.clone();
         let w = w.clone();
-        let mids = Arc::clone(&mids);
+        let lists = Arc::clone(&lists);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
@@ -112,9 +112,7 @@ fn wire_search(state: &GuiState, app: &crate::AppWindow) {
                             app.set_selected_msg_idx(-1);
                             app.set_status_text(format!("{count} results").into());
                         }
-                        if let Ok(mut mid) = mids.lock() {
-                            *mid = ids;
-                        }
+                        lists.set_messages(ids);
                     })
                     .ok();
                 }
@@ -128,23 +126,16 @@ fn wire_search(state: &GuiState, app: &crate::AppWindow) {
 fn wire_select_folder(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let fids = Arc::clone(&state.folder_ids);
-    let mids = Arc::clone(&state.message_ids);
+    let lists = Arc::clone(&state.lists);
     app.on_select_folder(move |idx| {
         let idx = usize::try_from(idx).unwrap_or(0);
-        let folder_id = {
-            let ids = fids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match ids.get(idx) {
-                Some(id) => *id,
-                None => return,
-            }
+        let Some(folder_id) = lists.folder_at(idx) else {
+            return;
         };
         let is_unified = folder_id == kestrel_core::ids::FolderId::from_uuid(uuid::Uuid::nil());
         let h = h.clone();
         let w = w.clone();
-        let mids = Arc::clone(&mids);
+        let lists = Arc::clone(&lists);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
@@ -240,9 +231,7 @@ fn wire_select_folder(state: &GuiState, app: &crate::AppWindow) {
                             app.set_loading_messages(false);
                             app.set_status_text(format!("{total} messages").into());
                         }
-                        if let Ok(mut mid) = mids.lock() {
-                            *mid = ids;
-                        }
+                        lists.set_messages(ids);
                     })
                     .ok();
                 }
@@ -256,27 +245,17 @@ fn wire_select_folder(state: &GuiState, app: &crate::AppWindow) {
 fn wire_select_message(state: &GuiState, app: &crate::AppWindow) {
     let h = state.handle.clone();
     let w = app.as_weak();
-    let mids = Arc::clone(&state.message_ids);
-    let att_keys_outer = Arc::clone(&state.current_attachment_keys);
-    let att_msg_outer = Arc::clone(&state.current_message_for_attachments);
-    let html_cache = Arc::clone(&state.current_message_html);
+    let lists = Arc::clone(&state.lists);
+    let msg_view = Arc::clone(&state.message_view);
 
     app.on_select_message(move |idx| {
         let idx = usize::try_from(idx).unwrap_or(0);
-        let message_id = {
-            let ids = mids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match ids.get(idx) {
-                Some(id) => *id,
-                None => return,
-            }
+        let Some(message_id) = lists.message_at(idx) else {
+            return;
         };
         let h = h.clone();
         let w = w.clone();
-        let att_keys = Arc::clone(&att_keys_outer);
-        let att_msg = Arc::clone(&att_msg_outer);
-        let html_cache2 = Arc::clone(&html_cache);
+        let msg_view = Arc::clone(&msg_view);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
@@ -315,11 +294,6 @@ fn wire_select_message(state: &GuiState, app: &crate::AppWindow) {
                     let remote_blocked = raw_html
                         .as_deref()
                         .map_or(0, kestrel_core::sanitizer::count_remote_refs);
-                    {
-                        if let Ok(mut cache) = html_cache2.lock() {
-                            *cache = raw_html;
-                        }
-                    }
                     let attachments: Vec<(String, String, String)> = view
                         .parts
                         .iter()
@@ -368,14 +342,7 @@ fn wire_select_message(state: &GuiState, app: &crate::AppWindow) {
                         }
                     })
                     .ok();
-                    {
-                        if let Ok(mut keys) = att_keys.lock() {
-                            *keys = att_keys_clone;
-                        }
-                        if let Ok(mut msg) = att_msg.lock() {
-                            *msg = Some(message_id);
-                        }
-                    }
+                    msg_view.display(message_id, att_keys_clone, raw_html);
                     // Mark message as read
                     let (tx_read, _rx_read) = tokio::sync::oneshot::channel();
                     let _ = h
@@ -403,7 +370,7 @@ fn wire_message_actions(state: &GuiState, app: &crate::AppWindow) {
     {
         let h = state.handle.clone();
         let w = app.as_weak();
-        let mids = Arc::clone(&state.message_ids);
+        let lists = Arc::clone(&state.lists);
         app.on_delete_message(move || {
             let selected_idx = {
                 let Some(app_ref) = w.upgrade() else { return };
@@ -413,14 +380,8 @@ fn wire_message_actions(state: &GuiState, app: &crate::AppWindow) {
                 }
                 usize::try_from(idx).unwrap_or(0)
             };
-            let message_id = {
-                let ids = mids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match ids.get(selected_idx) {
-                    Some(id) => *id,
-                    None => return,
-                }
+            let Some(message_id) = lists.message_at(selected_idx) else {
+                return;
             };
             let h = h.clone();
             let w = w.clone();
@@ -457,8 +418,7 @@ fn wire_message_actions(state: &GuiState, app: &crate::AppWindow) {
     {
         let h = state.handle.clone();
         let w = app.as_weak();
-        let mids = Arc::clone(&state.message_ids);
-        let fids = Arc::clone(&state.folder_ids);
+        let lists = Arc::clone(&state.lists);
         app.on_archive_message(move || {
             let selected_msg_idx = {
                 let Some(app_ref) = w.upgrade() else { return };
@@ -468,23 +428,11 @@ fn wire_message_actions(state: &GuiState, app: &crate::AppWindow) {
                 }
                 usize::try_from(idx).unwrap_or(0)
             };
-            let message_id = {
-                let ids = mids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match ids.get(selected_msg_idx) {
-                    Some(id) => *id,
-                    None => return,
-                }
+            let Some(message_id) = lists.message_at(selected_msg_idx) else {
+                return;
             };
-            let archive_folder_id = {
-                let ids = fids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                ids.iter()
-                    .find(|id| **id != kestrel_core::ids::FolderId::from_uuid(uuid::Uuid::nil()))
-                    .copied()
-            };
+            let archive_folder_id = lists
+                .first_folder_except(kestrel_core::ids::FolderId::from_uuid(uuid::Uuid::nil()));
             let Some(dest) = archive_folder_id else {
                 let w_err = w.clone();
                 slint::invoke_from_event_loop(move || {
@@ -530,7 +478,7 @@ fn wire_message_actions(state: &GuiState, app: &crate::AppWindow) {
     {
         let h = state.handle.clone();
         let w = app.as_weak();
-        let mids = Arc::clone(&state.message_ids);
+        let lists = Arc::clone(&state.lists);
         app.on_flag_message(move || {
             let selected_idx = {
                 let Some(app_ref) = w.upgrade() else { return };
@@ -540,14 +488,8 @@ fn wire_message_actions(state: &GuiState, app: &crate::AppWindow) {
                 }
                 usize::try_from(idx).unwrap_or(0)
             };
-            let message_id = {
-                let ids = mids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match ids.get(selected_idx) {
-                    Some(id) => *id,
-                    None => return,
-                }
+            let Some(message_id) = lists.message_at(selected_idx) else {
+                return;
             };
             let h = h.clone();
             let w = w.clone();
@@ -584,28 +526,15 @@ fn wire_message_actions(state: &GuiState, app: &crate::AppWindow) {
     {
         let h = state.handle.clone();
         let w = app.as_weak();
-        let mids = Arc::clone(&state.message_ids);
-        let fids = Arc::clone(&state.folder_ids);
+        let lists = Arc::clone(&state.lists);
         app.on_move_message_to_folder(move |msg_idx, folder_idx| {
             let msg_idx = usize::try_from(msg_idx).unwrap_or(0);
             let dest_folder_idx = usize::try_from(folder_idx).unwrap_or(0);
-            let message_id = {
-                let ids = mids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match ids.get(msg_idx) {
-                    Some(id) => *id,
-                    None => return,
-                }
+            let Some(message_id) = lists.message_at(msg_idx) else {
+                return;
             };
-            let dest_folder_id = {
-                let ids = fids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match ids.get(dest_folder_idx) {
-                    Some(id) => *id,
-                    None => return,
-                }
+            let Some(dest_folder_id) = lists.folder_at(dest_folder_idx) else {
+                return;
             };
             let h = h.clone();
             let w = w.clone();

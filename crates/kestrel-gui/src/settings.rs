@@ -273,18 +273,12 @@ fn wire_edit_account(_state: &GuiState, app: &crate::AppWindow) {
 fn wire_remove_account(state: &GuiState, app: &crate::AppWindow) {
     let w = app.as_weak();
     let h = state.handle.clone();
-    let aids = Arc::clone(&state.account_ids_cache);
-    let emails_remove = Arc::clone(&state.account_emails_cache);
+    let accounts = Arc::clone(&state.accounts);
 
     app.on_remove_account(move |idx| {
         let Some(app) = w.upgrade() else { return };
         let idx = usize::try_from(idx).unwrap_or(0);
-        let account_id = {
-            let ids = aids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            ids.get(idx).copied()
-        };
+        let account_id = accounts.id_at(idx);
         let Some(account_id) = account_id else {
             show_toast(&app, "Account not found", "error");
             return;
@@ -297,8 +291,7 @@ fn wire_remove_account(state: &GuiState, app: &crate::AppWindow) {
             .unwrap_or_default();
         let h2 = h.clone();
         let w2 = w.clone();
-        let aids2 = Arc::clone(&aids);
-        let emails2 = Arc::clone(&emails_remove);
+        let accounts2 = Arc::clone(&accounts);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async move {
@@ -322,7 +315,7 @@ fn wire_remove_account(state: &GuiState, app: &crate::AppWindow) {
                                 // Refresh account list
                                 let h3 = h2.clone();
                                 let w3 = w2.clone();
-                                let aids3 = Arc::clone(&aids2);
+                                let accounts3 = Arc::clone(&accounts2);
                                 std::thread::spawn(move || {
                                     let rt = tokio::runtime::Handle::current();
                                     rt.block_on(async move {
@@ -355,11 +348,7 @@ fn wire_remove_account(state: &GuiState, app: &crate::AppWindow) {
                                                 .collect();
                                             let ids: Vec<AccountId> =
                                                 accts.iter().map(|a| a.id).collect();
-                                            {
-                                                if let Ok(mut cached) = emails2.lock() {
-                                                    *cached = acct_email_strs;
-                                                }
-                                            }
+                                            accounts3.replace(ids, acct_email_strs);
                                             slint::invoke_from_event_loop(move || {
                                                 if let Some(app) = w3.upgrade() {
                                                     app.set_settings_account_names(
@@ -401,9 +390,6 @@ fn wire_remove_account(state: &GuiState, app: &crate::AppWindow) {
                                                     app.set_account_colors(
                                                         colors.as_slice().into(),
                                                     );
-                                                    if let Ok(mut cached) = aids3.lock() {
-                                                        *cached = ids;
-                                                    }
                                                 }
                                             })
                                             .ok();
