@@ -1,0 +1,12 @@
+From: fwd@example.org
+Subject: Fwd: 1
+Content-Type: message/rfc822
+
+From: fwd@example.org
+Subject: Fwd: 2
+Content-Type: message/rfc822
+
+From: leaf@example.org
+Subject: leaf body
+
+The original message.

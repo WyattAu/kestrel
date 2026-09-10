@@ -1,0 +1,20 @@
+From: sender@example.org
+To: rcpt@example.org
+Subject: related with inline cid
+Message-ID: <related@x>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="rel-b"; type="text/html"
+
+--rel-b
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<html><body><img src="cid:logo@example.org"></body></html>
+--rel-b
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-ID: <logo@example.org>
+Content-Disposition: inline; filename="logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP4//8/AwAFAAGl9kVAAAAAAElFTkSuQmCC
+--rel-b--

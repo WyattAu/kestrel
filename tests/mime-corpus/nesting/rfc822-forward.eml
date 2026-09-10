@@ -1,0 +1,28 @@
+From: forwarder@example.org
+To: me@example.org
+Subject: Fwd: level 2
+Date: Mon, 7 Sep 2026 10:00:00 +0000
+Message-ID: <lvl2@x>
+Content-Type: message/rfc822
+
+From: forwarder@example.org
+To: me@example.org
+Subject: Fwd: level 1
+Date: Mon, 7 Sep 2026 10:00:00 +0000
+Message-ID: <lvl1@x>
+Content-Type: message/rfc822
+
+From: forwarder@example.org
+To: me@example.org
+Subject: Fwd: level 0
+Date: Mon, 7 Sep 2026 10:00:00 +0000
+Message-ID: <lvl0@x>
+Content-Type: message/rfc822
+
+From: leaf@example.org
+To: root@example.org
+Subject: leaf body
+Date: Mon, 7 Sep 2026 10:00:00 +0000
+Message-ID: <leaf@x>
+
+The original message.

@@ -15,7 +15,7 @@ Status: **v1.0 — binding** · Governs every phase's exit criteria
 | Integration tests | `crates/<crate>/tests/*.rs` | default profile |
 | Docker-gated integration | `crates/*/tests/integration.rs`, every test `#[ignore]`d and named `integration_*` | `--profile integration` |
 | Crypto CLI interop (backlog #15) | `kestrel-crypto/tests/cli_interop.rs`, `#[ignore]`d; round-trips vs `gpg` and `openssl smime` | `cli-interop` CI job (`--run-ignored ignored-only`) |
-| MIME corpus | `tests/mime-corpus/` at workspace root, loaded via `kestrel-core::testkit::mime_corpus()` | default profile |
+| MIME corpus | `tests/mime-corpus/` at workspace root, loaded via `kestrel_core::testkit::load_mime_corpus()` | default profile |
 | Fuzz targets | `fuzz/` workspace member (`cargo-fuzz`) | scheduled/CI-cron, smoke in CI |
 | Benchmarks | `crates/kestrel-storage/benches/`, TUI/GUI start harnesses | `cargo bench`, CI compile + nightly run |
 
@@ -33,8 +33,9 @@ Curated raw `.eml` files exercising the hostile/broken input space:
 | `broken-headers/` | missing semicolons, un-escaped folds, 8-bit in headers, truncated encoded-words |
 | `rfc2047/` | nested encodings, unknown charsets, split words, long runs |
 | `charsets/` | ISO-8859-1..15, Windows-1252, Shift-JIS, GB2312, KOI8-R, invalid byte sequences |
-| `nesting/` | `multipart` depth 1..64 (valid) and 65+ (must hit `ParseError::Limit`), `message/rfc822` chains |
-| `bombs/` | base64/quoted-printable expansion bombs (must hit decoded-size limits), decompression ratio cap |
+| `nesting/` | `multipart` depth 1..64 (valid) and 65+ (must hit `ParseError::Limit`), `message/rfc822` chains (valid under the cap, and 80 shells over cap → `Limit::NestingDepth`) |
+| `bombs/` | base64/quoted-printable expansion bombs (must hit decoded-size limits), decompression ratio cap, inert compressed payload |
+| `related/` | `multipart/related` + `cid:` parts resolvable; broken-root variant stays listable |
 | `ambiguous/` | duplicate headers, conflicting Content-Types, missing boundaries, boundary at EOF, LF-only line endings |
 
 Rules:

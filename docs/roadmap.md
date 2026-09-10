@@ -62,9 +62,19 @@ Remaining gaps:
   `scripts/measure-process-startup.sh`, post-merge job): it times the app's
   exec-to-detect boot and gates the real process's idle RSS against the
   requirements §8 hard limits (TUI 40 MB / GUI 200 MB); the interactive
-  cold-start SLA stays with the criterion benches. The coverage-gate
+  cold-start SLA stays with the criterion benches.  The coverage-gate
   decision (issue #10) and the §7 matrix rows are enforced by
   `scripts/check-threat-matrix.sh` in the `test` job.
+- **`message/rfc822` depth-cap bypass (found by the #14 corpus work):**
+  nested-message shells restarted the parser walk at depth 0 per
+  attachment, so a ~440 KB chain of forwarded messages overflowed the
+  stack (SIGABRT) before the 64-level cap ever applied. The cap now
+  accumulates across shells; covered by
+  `regression_14_deep_rfc822_chain_hits_depth_cap_not_stack_overflow`
+  and over-cap fixtures in `tests/mime-corpus/nesting/`. The corpus also
+  gained `multipart/related` + `cid:` coverage, an inert-compressed-payload
+  bomb case, and OSS-Fuzz project config (`oss-fuzz/projects/kestrel/`,
+  upstream filing tracked by #14).
 
 Issue numbers refer to the GitHub backlog (phase/epic labels). The
 `protocol_surface_matches_documentation` test in `kestrel-core` guards

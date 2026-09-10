@@ -133,7 +133,7 @@ impl MimeParser for StalwartParser {
         };
         let mut out = ParsedMessage::default();
         let mut total_decoded: u64 = 0;
-        convert_message(&message, &mut out, &mut total_decoded)?;
+        convert_message(&message, &mut out, &mut total_decoded, 0)?;
         Ok(out)
     }
 }
@@ -178,7 +178,20 @@ fn convert_message(
     message: &MpMessage<'_>,
     out: &mut ParsedMessage,
     total_decoded: &mut u64,
+    base_depth: usize,
 ) -> Result<(), KestrelError> {
+    // `message/rfc822` shells recurse through this function; `base_depth`
+    // accumulates across the whole shell chain so the documented nesting cap
+    // (threat model §4.2) bounds the recursion depth. Without accumulation
+    // every shell restarted the walk at 0 and a ~440 KB chain of rfc822
+    // attachments overflowed the stack (issue #14 regression). Multipart
+    // depth keeps accumulating inside `walk_part`.
+    if base_depth > MAX_NESTING_DEPTH {
+        return Err(KestrelError::ParseLimit {
+            kind: LimitKind::NestingDepth,
+            actual: format!("depth {base_depth}"),
+        });
+    }
     if let Some(mid) = message.message_id() {
         out.message_id = Some(strip_angle(mid));
     }
@@ -199,7 +212,7 @@ fn convert_message(
             .push("root part had encoding problems; best-effort decode".to_string());
     }
     let root = message.root_part();
-    walk_part(message, root, 0, out, total_decoded)?;
+    walk_part(message, root, base_depth, out, total_decoded)?;
     Ok(())
 }
 
@@ -260,7 +273,7 @@ fn walk_part(
         }
         PartType::Message(nested) => {
             let mut nested_out = ParsedMessage::default();
-            convert_message(nested, &mut nested_out, total_decoded)?;
+            convert_message(nested, &mut nested_out, total_decoded, depth + 1)?;
             let decoded_size = u64::try_from(nested.raw_message.len()).unwrap_or(u64::MAX);
             check_sizes(seq, encoded_size, decoded_size, total_decoded)?;
             out.parts.push(ParsedPart {
