@@ -126,7 +126,22 @@ impl MimeParser for StalwartParser {
         scan_header_limits(raw)?;
         // The parser is upstream-fuzzed and claims best-effort semantics;
         // we treat total failure as malformed, everything else as warnings.
-        let Some(message) = MessageParser::default().parse(raw) else {
+        //
+        // Upstream also ships `debug_assert!(false, ...)` on malformed-
+        // boundary paths (mail-parser 0.11.8, parsers/message.rs:485
+        // "Invalid part ID, could not find multipart"), which panic in
+        // debug builds — including the ASan/libFuzzer harness (issue #14
+        // CI crash). The no-panic contract (threat model §4) is ours at
+        // this adapter boundary: contain any upstream panic and surface it
+        // as malformed input. Mirrors the supervisor's containment pattern
+        // (kestrel-engine/src/supervisor.rs, ADR 0004).
+        let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            MessageParser::default().parse(raw)
+        }))
+        .map_err(|_| KestrelError::ParseMalformed {
+            detail: "parser panicked on malformed message; rejected".to_string(),
+        })?;
+        let Some(message) = parsed else {
             return Err(KestrelError::ParseMalformed {
                 detail: "parser returned nothing".to_string(),
             });

@@ -252,3 +252,29 @@ fn corpus_bombs_stay_inert_at_the_parser_boundary() {
         );
     }
 }
+
+/// Issue #14 CI fuzz crash: mail-parser 0.11.8 carries
+/// `debug_assert!(false, "Invalid part ID, could not find multipart")`
+/// (parsers/message.rs:485), which panics on malformed-boundary input in
+/// debug builds — the harness build. The adapter boundary must contain it
+/// as a typed malformed error, never propagate a panic (threat model §4).
+/// The triggering 4 KB input is committed verbatim as a corpus fixture and
+/// a fuzz seed so this class can never regress silently.
+#[test]
+fn issue_14_upstream_debug_assert_panic_is_contained_as_malformed() {
+    let corpus = load_mime_corpus();
+    let (_, bytes) = corpus
+        .iter()
+        .find(|(n, _)| n.contains("malformed-boundary-rfc822.eml"))
+        .unwrap_or_else(|| panic!("missing malformed-boundary-rfc822.eml in corpus"))
+        .to_owned();
+    // Debug builds must not panic through the boundary (this test runs
+    // under `cargo test` debug; a regression aborts here loudly).
+    let outcome = StalwartParser::parse(&bytes);
+    assert!(
+        outcome.is_ok() || matches!(&outcome, Err(KestrelError::ParseMalformed { .. })),
+        "upstream debug_assert must surface as Ok or typed malformed error, got: {outcome:?}"
+    );
+    // Deterministic across calls (determinism is a corpus invariant).
+    assert_eq!(outcome.is_err(), StalwartParser::parse(&bytes).is_err());
+}
