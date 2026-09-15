@@ -20,6 +20,7 @@ tokio-util = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2"] }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 # Sequoia's crypto-openssl backend (ADR 0012) pulls openssl-sys, which needs
 # a real OpenSSL for the android target. Build OpenSSL from source for

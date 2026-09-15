@@ -27,6 +27,7 @@ tray-icon = { version = "0.24", optional = true }
 raw-window-handle = { version = "0.6", features = ["std"], optional = true }
 mime_guess = { version = "2", optional = true }
 arboard = { version = "3", optional = true }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [features]
 default = []

@@ -29,6 +29,7 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1", "to
 base64 = "0.22"
 chrono = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

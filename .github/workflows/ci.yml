@@ -21,8 +21,14 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -37,8 +43,13 @@ jobs:
       # layered config and rejects unknown keys, so a KESTREL_PROPTOP_CASES
       # here broke every config test (unknown field: proptop_cases).
       PROPTEST_CASES: "256"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
@@ -51,8 +62,14 @@ jobs:
 
   webview-isolation:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # libgl1-mesa-dri: the Slint shell renders via femtovg/OpenGL; headless
@@ -67,8 +84,14 @@ jobs:
     # Real-binary cold-start + idle-RSS measurement (backlog #3). Runs after
     # merge and on demand; builds both frontends in release.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # libgl1-mesa-dri: the Slint shell renders via femtovg/OpenGL; headless
@@ -88,8 +111,14 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libsqlite3-dev pkg-config
@@ -111,8 +140,14 @@ jobs:
 
   sqlx:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # sqlx prepare compiles workspace members (gui pulls webkit/gtk/dbus).
@@ -183,8 +218,14 @@ jobs:
     # Pin hardware by setting the BENCH_RUNNER repository variable to a
     # self-hosted label (engineering-standards §5); default to GH-hosted.
     runs-on: ${{ vars.BENCH_RUNNER || 'ubuntu-latest' }}
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
@@ -372,8 +413,14 @@ jobs:
     # Backlog #15: OpenPGP (gpg) and S/MIME (openssl) reference-CLI round
     # trips. Tests are #[ignore]d (plain runs stay hermetic); this job
     # installs the CLIs and force-runs them.
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # libdbus-1-dev: the kestrel-crypto keyring backend pulls libdbus-sys.
@@ -387,8 +434,14 @@ jobs:
   providers:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev pkg-config
@@ -407,8 +460,14 @@ jobs:
 
   mobile:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # fontconfig: kestrel-mobile's UI stack links it on Linux hosts.
@@ -431,8 +490,14 @@ jobs:
       matrix:
         target:
           - aarch64-linux-android
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: sccache stats
+        run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # rust-toolchain.toml pins channel "1.97.1", and cargo resolves to the

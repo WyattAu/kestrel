@@ -12,6 +12,7 @@ members = [
     "crates/kestrel-tui",
     "crates/kestrel-gui",
     "crates/kestrel-mobile",
+    "workspace-hack",
 ]
 
 [workspace.package]

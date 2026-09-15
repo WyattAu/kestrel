@@ -44,6 +44,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 oauth-toolkit = { workspace = true }
 # Refresh-worker cancellation (shared token with the engine supervisor).
 tokio-util = { version = "0.7", features = ["rt"] }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [features]
 # Builds OpenSSL from source (openssl-src) so openssl-sys needs no system
