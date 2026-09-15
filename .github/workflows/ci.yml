@@ -443,17 +443,22 @@ jobs:
       # ring/sqlite/openssl build scripts need the NDK clang for the target
       # triple ("<triple>-clang"), which only ships in the NDK; cc-rs does
       # not auto-discover it here, so export the per-target CC/AR explicitly.
-      # Runner-image drift (2026-09-15): the preinstalled cmdline-tools'
-      # sdkmanager fails with "Failed to find package 'tools'" (Google
-      # removed the legacy package). Pin the classic stable build
-      # (11076708 additionally trips an interactive preview-license prompt).
-      - uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: 10406996
+      # android-actions/setup-android removed (2026-09-15): the action still
+      # installs the legacy `tools` package, which Google deleted from the
+      # repository — every cmdline-tools pin now aborts on its preview
+      # license prompt. Hosted runners already ship the SDK + the current
+      # cmdline-tools; export the env directly and accept licenses via the
+      # maintained sdkmanager.
+      - name: Set up Android SDK (runner-preinstalled)
+        run: |
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
+          yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses >/dev/null 2>&1 || true
       - name: Install Android NDK and export target toolchain
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager --install "ndk;26.3.11579264" >/dev/null
+          SDKMGR=/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          "$SDKMGR" --install "ndk;26.3.11579264" >/dev/null
           NDK="$ANDROID_SDK_ROOT/ndk/26.3.11579264"
           BIN="$(ls -d "$NDK"/toolchains/llvm/prebuilt/*/bin | head -1)"
           TRIPLE_CC_VAR="CC_${TARGET//-/_}"
