@@ -24,6 +24,12 @@ ignore = [
     "RUSTSEC-2026-0206", # rustybuzz
     # fxhash (via tantivy) unmaintained — hash-only usage, no security impact.
     "RUSTSEC-2025-0057",
+    # lru 0.16 (via tantivy 0.26) panic-safety in LruCache::pop — no patched
+    # 0.16.x exists (fix line is >= 0.18.2; tantivy 0.26.2 still requires
+    # ^0.16.3). Impact bounded: search-cache pop during indexing, worst case
+    # a caught panic, not memory corruption from remote input. Tracks the
+    # tantivy upgrade that moves to lru 0.18+.
+    "RUSTSEC-2026-0253",
 ]
 
 [licenses]
