@@ -122,9 +122,14 @@ criterion = { version = "0.7", features = ["html_reports"] }
 tempfile = "3"
 fake = "3"
 
+# Panic strategy is deliberately left at the default `unwind` (not `abort`):
+# the GUI relies on unwinding for panic isolation — a panic in a task or
+# frontend boundary is caught and reported without taking down the process.
 [profile.release]
 lto = "thin"
 codegen-units = 1
+# Strip debug info and symbols from release binaries (shipped by release.yml).
+strip = true
 
 [profile.bench]
 lto = "thin"

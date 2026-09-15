@@ -31,23 +31,110 @@ use crate::{
 };
 
 /// WASM runtime configuration.
-#[derive(Debug)]
+///
+/// These fields are the plugin resource-limit surface: every value is
+/// enforced per plugin call by the executor (fuel, memory, wall-clock
+/// timeout). Defaults are chosen so a misbehaving plugin cannot starve
+/// the host, per ADR 0014 and threat model §4.4.
+#[derive(Debug, Clone)]
 pub struct RuntimeConfig {
-    /// Maximum memory per plugin in bytes.
+    /// Maximum linear memory per plugin in bytes.
+    ///
+    /// Enforced by a wasmtime [`wasmtime::ResourceLimiter`] on the plugin
+    /// store: allocations past this cap are denied and surfaced as
+    /// [`PluginError::MemoryLimitExceeded`].
     pub max_memory: usize,
-    /// Maximum execution time per call in microseconds.
+    /// Maximum wall-clock execution time per call, in microseconds.
+    ///
+    /// Enforced on the async execution path
+    /// ([`PluginExecutor::call_plugin_async`]); expiry yields
+    /// [`PluginError::ExecutionTimedOut`].
     pub max_execution_time: u64,
     /// Maximum host API calls per second.
     pub max_api_calls: u64,
+    /// Wasmtime fuel budget per plugin call.
+    ///
+    /// Fuel is wasmtime's compute-cost metering: roughly one unit per
+    /// executed operator. Each call gets exactly this budget; exhaustion
+    /// aborts execution with [`PluginError::FuelExhausted`] instead of
+    /// letting a plugin loop forever.
+    pub fuel_per_call: u64,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             max_memory: 64 * 1024 * 1024,  // 64 MB
-            max_execution_time: 1_000_000, // 1 second
+            max_execution_time: 5_000_000, // 5 seconds
             max_api_calls: 100,
+            fuel_per_call: 10_000_000, // ~10M wasm operators per call
         }
+    }
+}
+
+/// Host state carried inside the wasmtime [`wasmtime::Store`].
+#[derive(Debug)]
+struct PluginStoreState {
+    /// Linear-memory and table limits for this store's plugin.
+    limits: PluginLimits,
+}
+
+impl PluginStoreState {
+    fn new(max_memory: usize) -> Self {
+        Self {
+            limits: PluginLimits {
+                max_memory,
+                memory_limit_hit: false,
+                requested: 0,
+            },
+        }
+    }
+}
+
+/// [`wasmtime::ResourceLimiter`] capping a plugin's linear memory.
+///
+/// The store is synchronous (no `async_store`), so the sync limiter trait is
+/// the correct attachment point; wasmtime's `ResourceLimiterAsync` variant
+/// only applies to async stores.
+#[derive(Debug)]
+struct PluginLimits {
+    max_memory: usize,
+    /// Set when a growth past `max_memory` was denied, so call-site error
+    /// mapping can turn the resulting trap into a typed
+    /// [`PluginError::MemoryLimitExceeded`].
+    memory_limit_hit: bool,
+    /// Bytes requested by the denied growth, for the typed error.
+    requested: usize,
+}
+
+impl wasmtime::ResourceLimiter for PluginLimits {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if desired > self.max_memory {
+            self.memory_limit_hit = true;
+            self.requested = desired;
+            return Err(wasmtime::Error::msg("plugin linear memory cap exceeded"));
+        }
+        Ok(true)
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        // Tables hold one pointer-sized element per entry; bound them by the
+        // same byte budget as memory to keep the cap meaningful.
+        Ok(desired.saturating_mul(size_of::<usize>()) <= self.max_memory)
+    }
+
+    fn memories(&self) -> usize {
+        1
     }
 }
 
@@ -58,8 +145,8 @@ impl Default for RuntimeConfig {
 /// Panics if `ptr + len` exceeds the memory bounds — callers must validate
 /// offsets before invoking.
 #[must_use]
-pub fn read_from_plugin_memory(
-    store: &wasmtime::Store<()>,
+pub fn read_from_plugin_memory<T>(
+    store: &wasmtime::Store<T>,
     memory: &wasmtime::Memory,
     ptr: usize,
     len: usize,
@@ -73,8 +160,8 @@ pub fn read_from_plugin_memory(
 /// # Errors
 ///
 /// Returns [`PluginError::Runtime`] if `ptr + data.len()` exceeds memory bounds.
-pub fn write_to_plugin_memory(
-    store: &mut wasmtime::Store<()>,
+pub fn write_to_plugin_memory<T>(
+    store: &mut wasmtime::Store<T>,
     memory: &wasmtime::Memory,
     ptr: usize,
     data: &[u8],
@@ -154,25 +241,54 @@ impl PluginModule {
         })
     }
 
-    /// Executes a named function in the WASM module.
+    /// Executes a named function in the WASM module with default limits.
+    ///
+    /// See [`PluginModule::call_with_config`] for the limit semantics; this
+    /// convenience wrapper applies [`RuntimeConfig::default`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::Runtime`] if execution fails, the function
+    /// is not found, or resource limits are exceeded.
+    pub fn call(&self, function: &str, args: &[u8]) -> Result<Vec<u8>, PluginError> {
+        self.call_with_config(function, args, &RuntimeConfig::default())
+    }
+
+    /// Executes a named function in the WASM module under `config`'s limits.
     ///
     /// Host functions are registered in the `"host"` namespace:
     /// - `host_log(level, ptr, len)` — plugin log messages
     /// - `host_alloc(len) -> ptr` — allocate in plugin memory
     /// - `host_dealloc(ptr, len)` — free plugin memory
     ///
-    /// After execution, if the plugin wrote a JSON response via
-    /// `host_alloc`, this method reads the response from plugin memory.
+    /// Resource limits enforced here, per call:
+    /// - **Fuel**: the store gets exactly `config.fuel_per_call`; exhaustion
+    ///   aborts execution with [`PluginError::FuelExhausted`].
+    /// - **Memory**: a [`wasmtime::ResourceLimiter`] denies linear-memory
+    ///   growth past `config.max_memory`, surfacing as
+    ///   [`PluginError::MemoryLimitExceeded`].
+    ///
+    /// Wall-clock timeouts are enforced by [`PluginExecutor::
+    /// call_plugin_async`]; the sync path relies on the fuel bound to
+    /// terminate runaway plugins.
     ///
     /// # Errors
     ///
-    /// Returns [`PluginError::Runtime`] if execution fails, the function
-    /// is not found, or resource limits are exceeded.
-    pub fn call(&self, function: &str, _args: &[u8]) -> Result<Vec<u8>, PluginError> {
-        let mut store = wasmtime::Store::new(&self.engine, ());
+    /// Returns [`PluginError::Runtime`] if execution fails or the function
+    /// is not found, [`PluginError::FuelExhausted`] on fuel exhaustion, and
+    /// [`PluginError::MemoryLimitExceeded`] when the memory cap is hit.
+    pub fn call_with_config(
+        &self,
+        function: &str,
+        _args: &[u8],
+        config: &RuntimeConfig,
+    ) -> Result<Vec<u8>, PluginError> {
+        let mut store =
+            wasmtime::Store::new(&self.engine, PluginStoreState::new(config.max_memory));
         store
-            .set_fuel(u64::MAX)
+            .set_fuel(config.fuel_per_call)
             .map_err(|e| PluginError::Runtime(format!("fuel: {e}")))?;
+        store.limiter(|state| &mut state.limits);
 
         let mut linker = wasmtime::Linker::new(&self.engine);
 
@@ -181,21 +297,24 @@ impl PluginModule {
             .func_wrap(
                 "host",
                 "log",
-                |_caller: wasmtime::Caller<'_, ()>, level: i32, ptr: i32, len: i32| {
+                |_caller: wasmtime::Caller<'_, PluginStoreState>,
+                 level: i32,
+                 ptr: i32,
+                 len: i32| {
                     tracing::debug!("plugin log (level={level}): ptr={ptr}, len={len}");
                 },
             )
             .map_err(|e| PluginError::Runtime(format!("link host_log: {e}")))?;
 
         // host_alloc(len: i32) -> i32
-        // Delegates to the plugin's exported `kesten_alloc` function.
+        // Delegates to the plugin's exported `kestrel_alloc` function.
         linker
             .func_wrap(
                 "host",
                 "alloc",
-                |mut caller: wasmtime::Caller<'_, ()>, len: i32| -> i32 {
+                |mut caller: wasmtime::Caller<'_, PluginStoreState>, len: i32| -> i32 {
                     let Some(wasmtime::Extern::Func(alloc_func)) =
-                        caller.get_export("kesten_alloc")
+                        caller.get_export("kestrel_alloc")
                     else {
                         return 0;
                     };
@@ -212,14 +331,14 @@ impl PluginModule {
             .map_err(|e| PluginError::Runtime(format!("link host_alloc: {e}")))?;
 
         // host_dealloc(ptr: i32, len: i32)
-        // Delegates to the plugin's exported `kesten_dealloc` function.
+        // Delegates to the plugin's exported `kestrel_dealloc` function.
         linker
             .func_wrap(
                 "host",
                 "dealloc",
-                |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
+                |mut caller: wasmtime::Caller<'_, PluginStoreState>, ptr: i32, len: i32| {
                     let Some(wasmtime::Extern::Func(dealloc_func)) =
-                        caller.get_export("kesten_dealloc")
+                        caller.get_export("kestrel_dealloc")
                     else {
                         return;
                     };
@@ -234,11 +353,11 @@ impl PluginModule {
 
         let instance = linker
             .instantiate(&mut store, &self.module)
-            .map_err(|e| PluginError::Runtime(format!("instantiate: {e}")))?;
+            .map_err(|e| map_execution_error(&store, &e, config))?;
 
         if let Some(func) = instance.get_func(&mut store, function) {
             func.call(&mut store, &[], &mut [])
-                .map_err(|e| PluginError::Runtime(format!("call: {e}")))?;
+                .map_err(|e| map_execution_error(&store, &e, config))?;
             Ok(vec![])
         } else {
             tracing::debug!(
@@ -247,6 +366,45 @@ impl PluginModule {
                 self.manifest.name
             );
             Ok(vec![])
+        }
+    }
+
+    /// Asynchronously executes a named function under `config`'s limits,
+    /// including a wall-clock timeout.
+    ///
+    /// The synchronous execution runs on the tokio blocking pool; if
+    /// `config.max_execution_time` elapses first, this returns
+    /// [`PluginError::ExecutionTimedOut`] and the abandoned worker keeps
+    /// running until its fuel budget is spent (it is detached, never
+    /// rejoined).
+    ///
+    /// # Errors
+    ///
+    /// As [`PluginModule::call_with_config`], plus
+    /// [`PluginError::ExecutionTimedOut`] on timeout.
+    pub async fn call_async(
+        &self,
+        function: &str,
+        args: &[u8],
+        config: &RuntimeConfig,
+    ) -> Result<Vec<u8>, PluginError> {
+        let function = function.to_owned();
+        let args = args.to_vec();
+        let config = config.clone();
+        let timeout_ms = config.max_execution_time / 1_000;
+        let timeout = std::time::Duration::from_micros(config.max_execution_time);
+        // `Engine`/`Module` clones are cheap (arc-backed); they give the
+        // blocking worker a `'static` handle independent of `&self`.
+        let module = Self {
+            manifest: self.manifest.clone(),
+            engine: self.engine.clone(),
+            module: self.module.clone(),
+        };
+        let fut =
+            tokio::task::spawn_blocking(move || module.call_with_config(&function, &args, &config));
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(joined) => joined.map_err(|e| PluginError::Runtime(format!("join: {e}")))?,
+            Err(_elapsed) => Err(PluginError::ExecutionTimedOut { timeout_ms }),
         }
     }
 
@@ -261,6 +419,27 @@ impl PluginModule {
     pub fn capabilities(&self) -> &[Capability] {
         &self.manifest.capabilities
     }
+}
+
+/// Maps a wasmtime execution error to the most specific typed
+/// [`PluginError`], consulting the store's limiter state.
+fn map_execution_error(
+    store: &wasmtime::Store<PluginStoreState>,
+    err: &wasmtime::Error,
+    config: &RuntimeConfig,
+) -> PluginError {
+    if store.data().limits.memory_limit_hit {
+        return PluginError::MemoryLimitExceeded {
+            requested: store.data().limits.requested,
+            limit: config.max_memory,
+        };
+    }
+    if err.downcast_ref::<wasmtime::Trap>() == Some(&wasmtime::Trap::OutOfFuel) {
+        return PluginError::FuelExhausted {
+            budget: config.fuel_per_call,
+        };
+    }
+    PluginError::Runtime(format!("{err:#}"))
 }
 
 /// Plugin executor that manages multiple loaded modules.
@@ -297,7 +476,7 @@ impl PluginExecutor {
         Ok(self.modules.len() - 1)
     }
 
-    /// Executes a function in a loaded plugin.
+    /// Executes a function in a loaded plugin under the executor's config.
     ///
     /// # Errors
     ///
@@ -312,7 +491,28 @@ impl PluginExecutor {
             .modules
             .get(index)
             .ok_or_else(|| PluginError::PluginNotFound(format!("plugin at index {index}")))?;
-        module.call(function, args)
+        module.call_with_config(function, args, &self.config)
+    }
+
+    /// Asynchronously executes a function in a loaded plugin under the
+    /// executor's config, including the wall-clock timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::PluginNotFound`] if the index is out of range,
+    /// and [`PluginError::ExecutionTimedOut`] if the call exceeds
+    /// [`RuntimeConfig::max_execution_time`].
+    pub async fn call_plugin_async(
+        &self,
+        index: usize,
+        function: &str,
+        args: &[u8],
+    ) -> Result<Vec<u8>, PluginError> {
+        let module = self
+            .modules
+            .get(index)
+            .ok_or_else(|| PluginError::PluginNotFound(format!("plugin at index {index}")))?;
+        module.call_async(function, args, &self.config).await
     }
 
     /// Returns the number of loaded plugins.
@@ -352,8 +552,9 @@ mod tests {
     fn runtime_config_defaults() {
         let config = RuntimeConfig::default();
         assert_eq!(config.max_memory, 64 * 1024 * 1024);
-        assert_eq!(config.max_execution_time, 1_000_000);
+        assert_eq!(config.max_execution_time, 5_000_000);
         assert_eq!(config.max_api_calls, 100);
+        assert_eq!(config.fuel_per_call, 10_000_000);
     }
 
     #[test]
@@ -449,11 +650,89 @@ mod tests {
             max_memory: 128 * 1024 * 1024,
             max_execution_time: 2_000_000,
             max_api_calls: 50,
+            fuel_per_call: 20_000_000,
         };
         let executor = PluginExecutor::new(config);
         assert_eq!(executor.config().max_memory, 128 * 1024 * 1024);
         assert_eq!(executor.config().max_execution_time, 2_000_000);
         assert_eq!(executor.config().max_api_calls, 50);
+        assert_eq!(executor.config().fuel_per_call, 20_000_000);
+    }
+
+    /// Infinite-loop module used for fuel/timeout tests.
+    fn infinite_loop_wasm() -> Vec<u8> {
+        wat::parse_str(
+            r#"
+            (module
+                (func (export "spin") (loop (br 0)))
+            )
+            "#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fuel_exhaustion_maps_to_typed_error() {
+        let manifest = sample_manifest();
+        let module = PluginModule::load(infinite_loop_wasm(), manifest).expect("should load");
+        let config = RuntimeConfig {
+            fuel_per_call: 1_000,
+            ..RuntimeConfig::default()
+        };
+        let err = module
+            .call_with_config("spin", &[], &config)
+            .expect_err("tiny fuel budget must abort the call");
+        assert!(
+            matches!(err, PluginError::FuelExhausted { budget } if budget == 1_000),
+            "expected typed FuelExhausted, got: {err:?}"
+        );
+        assert!(err.is_recoverable());
+    }
+
+    #[test]
+    fn memory_growth_past_cap_maps_to_typed_error() {
+        let manifest = sample_manifest();
+        // Starts at 1 page (64 KiB) and grows by 16 more pages (1 MiB total),
+        // exceeding the 512 KiB cap.
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "grow") (drop (memory.grow (i32.const 16))))
+            )
+            "#,
+        )
+        .unwrap();
+        let module = PluginModule::load(wasm, manifest).expect("should load");
+        let config = RuntimeConfig {
+            max_memory: 512 * 1024,
+            ..RuntimeConfig::default()
+        };
+        let err = module
+            .call_with_config("grow", &[], &config)
+            .expect_err("growth past the memory cap must be denied");
+        assert!(
+            matches!(err, PluginError::MemoryLimitExceeded { limit, .. } if limit == 512 * 1024),
+            "expected typed MemoryLimitExceeded, got: {err:?}"
+        );
+        assert!(err.is_recoverable());
+    }
+
+    #[test]
+    fn memory_growth_within_cap_succeeds() {
+        let manifest = sample_manifest();
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "grow") (drop (memory.grow (i32.const 2))))
+            )
+            "#,
+        )
+        .unwrap();
+        let module = PluginModule::load(wasm, manifest).expect("should load");
+        let result = module.call("grow", &[]).expect("growth within cap is fine");
+        assert!(result.is_empty());
     }
 
     #[test]

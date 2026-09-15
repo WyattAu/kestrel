@@ -15,9 +15,10 @@ kestrel-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt", "time"] }
 tracing = { workspace = true }
 wasmtime = "48"
 
 [dev-dependencies]
 wat = "1"
+tokio = { workspace = true, features = ["macros"] }

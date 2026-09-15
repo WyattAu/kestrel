@@ -24,7 +24,8 @@ How to write, build, and install plugins for Kestrel.
 │  │  │  - declare capabilities in manifest        │  │  │
 │  │  │  - call host functions via FFI             │  │  │
 │  │  │  - 64 MB memory limit                      │  │  │
-│  │  │  - 1 s execution timeout per call          │  │  │
+│  │  │  - 10M fuel units per call                 │  │  │
+│  │  │  - 5 s execution timeout per call          │  │  │
 │  │  └─────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────┘
@@ -109,7 +110,11 @@ The host registers these functions in the `"host"` Wasmtime namespace:
 | `host_dealloc` | `(ptr: i32, len: i32)` | Free previously allocated memory. |
 
 `host_alloc` and `host_dealloc` delegate to the plugin's exported
-`kesten_alloc` and `kesten_dealloc` functions (see below).
+`kestrel_alloc` and `kestrel_dealloc` functions (see below).
+
+> **Note:** prior to the ABI fix, these exports were misspelled
+> `kesten_alloc`/`kesten_dealloc`. Plugins compiled against the old names
+> must rename their exports.
 
 ### Plugin exports
 
@@ -120,8 +125,8 @@ Plugins may export these functions (all optional):
 | `plugin_init` | `() -> ()` | One-time initialization after load. |
 | `plugin_shutdown` | `() -> ()` | Graceful teardown before unload. |
 | `plugin_handle_event` | `(event_type: i32, event_ptr: i32, event_len: i32) -> ()` | Process an event from the host. |
-| `kesten_alloc` | `(len: i32) -> i32` | Allocate memory (called by `host_alloc`). |
-| `kesten_dealloc` | `(ptr: i32, len: i32) -> ()` | Free memory (called by `host_dealloc`). |
+| `kestrel_alloc` | `(len: i32) -> i32` | Allocate memory (called by `host_alloc`). |
+| `kestrel_dealloc` | `(ptr: i32, len: i32) -> ()` | Free memory (called by `host_dealloc`). |
 
 ### Example: reading a request
 
@@ -290,8 +295,11 @@ Non-recoverable errors may require a restart.
 
 - Access credentials, local files, or the network.
 - Execute native code (WASM only).
-- Exceed memory limits (64 MB default).
-- Exceed execution time limits (1 second per call).
+- Exceed memory limits (64 MB default, enforced by a wasmtime resource limiter).
+- Exceed the fuel budget (10 million wasmtime fuel units per call by default;
+  exhaustion aborts the call with a typed `FuelExhausted` error).
+- Exceed execution time limits (5 seconds per call; enforced on the async
+  execution path with a typed `ExecutionTimedOut` error).
 - Exceed API call rate limits (100 calls/second default).
 - Escape the WASM sandbox (no `unsafe` on the plugin side).
 

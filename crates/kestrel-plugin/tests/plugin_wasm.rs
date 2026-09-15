@@ -57,11 +57,11 @@ fn wasm_with_host_imports() -> Vec<u8> {
                 (call $log (local.get 0) (local.get 1) (local.get 2))
             )
 
-            (func (export "kesten_alloc") (param i32) (result i32)
+            (func (export "kestrel_alloc") (param i32) (result i32)
                 i32.const 1024
             )
 
-            (func (export "kesten_dealloc") (param i32 i32)
+            (func (export "kestrel_dealloc") (param i32 i32)
             )
         )
         "#,
@@ -85,11 +85,37 @@ fn wasm_with_json_response() -> Vec<u8> {
                 (call $log (i32.const 0) (i32.const 0) (i32.const 0))
             )
 
-            (func (export "kesten_alloc") (param i32) (result i32)
+            (func (export "kestrel_alloc") (param i32) (result i32)
                 i32.const 2048
             )
 
-            (func (export "kesten_dealloc") (param i32 i32)
+            (func (export "kestrel_dealloc") (param i32 i32)
+            )
+        )
+        "#,
+    )
+    .unwrap()
+}
+
+/// WASM module that calls `host_alloc` and traps if the host failed to
+/// resolve the plugin's `kestrel_alloc` export (host returns 0 on lookup
+/// failure). Locks the corrected plugin-ABI export spelling.
+fn wasm_host_alloc_delegates_to_plugin_alloc() -> Vec<u8> {
+    wat::parse_str(
+        r#"
+        (module
+            (import "host" "alloc" (func $alloc (param i32) (result i32)))
+
+            (memory (export "memory") 1)
+
+            (func (export "kestrel_alloc") (param i32) (result i32)
+                i32.const 1024
+            )
+
+            (func (export "plugin_init")
+                (if (i32.eqz (call $alloc (i32.const 8)))
+                    (then (unreachable))
+                )
             )
         )
         "#,
@@ -248,4 +274,55 @@ fn json_serialization_helpers_roundtrip() {
     let restored: serde_json::Value =
         kestrel_plugin::deserialize_json(&bytes).expect("deserialize");
     assert_eq!(restored, data);
+}
+
+#[test]
+fn host_alloc_resolves_plugin_kestrel_alloc_export() {
+    // Regression test for the `kesten_alloc` ABI typo: the host must find
+    // the plugin's `kestrel_alloc` export when `host_alloc` is called.
+    // The module traps if the host-side lookup fails (returns 0), so a
+    // successful call proves the export resolved to a real pointer.
+    let manifest = sample_manifest();
+    let wasm = wasm_host_alloc_delegates_to_plugin_alloc();
+    let mut executor = PluginExecutor::new(RuntimeConfig::default());
+    executor.load_plugin(wasm, manifest).expect("should load");
+
+    let result = executor
+        .call_plugin(0, "plugin_init", &[])
+        .expect("host_alloc must resolve the plugin's kestrel_alloc export");
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn call_exceeding_timeout_returns_execution_timed_out() {
+    // Infinite loop with a fuel budget far larger than the wall-clock
+    // timeout: only the timeout can abort the call here. The abandoned
+    // blocking worker keeps spinning until the test process exits, which
+    // is the documented trade-off of the detached spawn_blocking design.
+    let manifest = sample_manifest();
+    let wasm = wat::parse_str(
+        r#"
+        (module
+            (func (export "spin") (loop (br 0)))
+        )
+        "#,
+    )
+    .unwrap();
+    let config = RuntimeConfig {
+        fuel_per_call: 10_000_000_000,
+        max_execution_time: 50_000, // 50 ms
+        ..RuntimeConfig::default()
+    };
+    let mut executor = PluginExecutor::new(config);
+    executor.load_plugin(wasm, manifest).expect("should load");
+
+    let err = executor
+        .call_plugin_async(0, "spin", &[])
+        .await
+        .expect_err("infinite loop must hit the wall-clock timeout");
+    assert!(
+        matches!(err, PluginError::ExecutionTimedOut { timeout_ms } if timeout_ms == 50),
+        "expected typed ExecutionTimedOut, got: {err:?}"
+    );
+    assert!(err.is_recoverable());
 }

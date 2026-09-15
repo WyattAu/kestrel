@@ -32,6 +32,42 @@ pub enum PluginError {
     #[error("plugin not found: {0}")]
     PluginNotFound(String),
 
+    /// The plugin exhausted its configured fuel budget within a single call.
+    ///
+    /// Fuel bounds compute time per invocation (see [`crate::RuntimeConfig::
+    /// fuel_per_call`]); the call is aborted and reported here instead of
+    /// leaking a wasmtime trap.
+    #[error("fuel exhausted: plugin exceeded its per-call fuel budget of {budget}")]
+    FuelExhausted {
+        /// Configured fuel budget for the call that was aborted.
+        budget: u64,
+    },
+
+    /// The plugin attempted to grow linear memory past its configured cap.
+    ///
+    /// The growth is denied and surfaced as this error rather than a generic
+    /// wasmtime limit error.
+    #[error(
+        "memory limit exceeded: {requested} bytes requested exceeds the {limit}-byte plugin memory cap"
+    )]
+    MemoryLimitExceeded {
+        /// Total bytes the plugin attempted to map at the moment of denial.
+        requested: usize,
+        /// Configured linear-memory cap in bytes.
+        limit: usize,
+    },
+
+    /// A plugin call exceeded its wall-clock timeout and was aborted.
+    ///
+    /// Enforced on the async execution path (see [`crate::PluginExecutor::
+    /// call_plugin_async`]); the underlying worker may keep burning fuel in
+    /// the background until its fuel budget is spent.
+    #[error("execution timed out: call exceeded the {timeout_ms} ms plugin timeout")]
+    ExecutionTimedOut {
+        /// Configured timeout for the call that was aborted.
+        timeout_ms: u64,
+    },
+
     /// The plugin runtime encountered an error.
     #[error("runtime error: {0}")]
     Runtime(String),
@@ -53,6 +89,9 @@ impl PluginError {
                 | Self::ModuleLoad(_)
                 | Self::InvalidWasm(_)
                 | Self::PluginNotFound(_)
+                | Self::FuelExhausted { .. }
+                | Self::MemoryLimitExceeded { .. }
+                | Self::ExecutionTimedOut { .. }
         )
     }
 }
