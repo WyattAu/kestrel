@@ -135,3 +135,8 @@ strip = true
 [profile.bench]
 lto = "thin"
 codegen-units = 1
+
+# The hakari workspace-hack dependency edge in each member is never
+# referenced from source by design.
+[workspace.metadata.cargo-machete]
+ignored = ["workspace-hack"]

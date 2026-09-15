@@ -9,6 +9,8 @@ edition = "2021"
 description = "workspace-hack package, managed by hakari"
 # You can choose to publish this crate: see https://docs.rs/cargo-hakari/latest/cargo_hakari/publishing.
 publish = false
+# CI gates (cargo-deny) require an explicit license; matches the workspace.
+license = "Apache-2.0"
 
 # The parts of the file between the BEGIN HAKARI SECTION and END HAKARI SECTION comments
 # are managed by hakari.
@@ -222,3 +224,9 @@ zerotrie = { version = "0.2", default-features = false, features = ["alloc", "yo
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "yoke"] }
 
 ### END HAKARI SECTION
+
+# hakari-generated deps have no source references; keep cargo-machete
+# (kestrel CI deps job) quiet for exactly this generated set. If `cargo
+# hakari generate` changes the section above, refresh this list.
+[package.metadata.cargo-machete]
+ignored = ["aho-corasick", "anstyle", "anyhow", "arrayvec", "base64", "bitflags", "bytemuck", "chrono", "cranelift-bitset", "crc32fast", "crossbeam-utils", "crypto-common", "deranged", "derive_more", "digest", "either", "fastrand", "fnv", "form_urlencoded", "futures", "futures-io", "futures-sink", "futures-util", "getrandom", "half", "hashbrown-582f2526e08bb6a0", "hashbrown-9067fe90e8c1f593", "hashbrown-986da7b5efc2b80e", "i-slint-backend-selector", "i-slint-common", "icu_locale_core", "icu_provider", "idna", "image", "indexmap", "itertools", "lalrpop-util", "libc", "libsqlite3-sys", "litemap", "log", "lyon_extra", "lyon_geom", "lyon_path", "memchr", "miniz_oxide", "nom", "num-bigint", "num-integer", "num-traits", "once_cell", "openssl", "openssl-sys", "percent-encoding", "petgraph", "portable-atomic", "potential_utf", "ppv-lite86", "pulldown-cmark", "pulley-interpreter", "rand-274715c4dabd11b0", "rand-c38e5c1d305a1b54", "rand_chacha", "rand_core", "regex", "regex-automata", "regex-syntax", "reqwest", "rustls", "semver", "serde", "serde_core", "sha2", "simd-adler32", "slint", "slotmap", "smallvec", "sqlx-core", "sqlx-sqlite", "stable_deref_trait", "string_cache", "strum", "thiserror", "time", "tinystr", "tokio", "toml_parser", "toml_writer", "tracing", "tracing-core", "typenum", "uuid", "wasm-encoder", "wasmparser", "wasmtime-internal-core", "winnow", "writeable", "yoke", "zerocopy", "zerofrom", "zeroize", "zerotrie", "zerovec", "zstd", "zstd-safe", "zstd-sys", "aho-corasick", "anstyle", "anyhow", "arrayvec", "base64", "bitflags", "bytemuck", "cc", "cranelift-bitset", "crc32fast", "crossbeam-utils", "crypto-common", "derive_more", "derive_more-impl", "digest", "either", "fastrand", "form_urlencoded", "futures-io", "futures-sink", "futures-util", "getrandom", "half", "hashbrown-582f2526e08bb6a0", "hashbrown-9067fe90e8c1f593", "hashbrown-986da7b5efc2b80e", "i-slint-common", "i-slint-compiler", "icu_locale_core", "icu_provider", "idna", "image", "indexmap", "itertools", "lalrpop-util", "libc", "libsqlite3-sys", "litemap", "log", "lyon_extra", "lyon_geom", "lyon_path", "memchr", "miniz_oxide", "nom", "num-bigint", "num-integer", "num-traits", "once_cell", "percent-encoding", "petgraph", "portable-atomic", "potential_utf", "ppv-lite86", "pulldown-cmark", "pulley-interpreter", "rand-c38e5c1d305a1b54", "rand_core", "regex", "regex-automata", "regex-syntax", "rustls", "semver", "serde", "serde_core", "sha2", "simd-adler32", "slotmap", "smallvec", "sqlx-core", "sqlx-sqlite", "stable_deref_trait", "string_cache", "strum", "syn", "thiserror", "time-macros", "tinystr", "tokio", "toml_edit", "toml_parser", "toml_writer", "tracing", "tracing-core", "typenum", "unicode-xid", "wasm-encoder", "wasmparser", "wasmtime-internal-core", "winnow", "writeable", "yoke", "zerocopy", "zerofrom", "zeroize", "zerotrie", "zerovec"]
