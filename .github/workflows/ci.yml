@@ -424,7 +424,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # libdbus-1-dev: the kestrel-crypto keyring backend pulls libdbus-sys.
-      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y gnupg openssl libdbus-1-dev pkg-config
+      # libfontconfig1-dev: the workspace-hack feature union builds the GUI
+      # font stack (yeslogic-fontconfig-sys) in every member build, including
+      # this -p kestrel-crypto one.
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y gnupg openssl libdbus-1-dev libfontconfig1-dev pkg-config
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
