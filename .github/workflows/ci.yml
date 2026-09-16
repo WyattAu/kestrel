@@ -228,7 +228,14 @@ jobs:
         run: sccache --start-server || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+      # libwebkit2gtk-4.1-dev/libgtk-3-dev: `cargo bench --workspace`
+      # builds the GUI cold-start bench, and the workspace-hack feature
+      # union (hakari) builds the GUI font stack (yeslogic-fontconfig-sys)
+      # in every member build — same requirement as the cli-interop job.
+      # Without these, a cold-cache bench build fails on fontconfig.pc and
+      # criterion writes no data (which the percentile-budget gate then
+      # correctly rejects).
+      - run: sudo rm -f /etc/apt/sources.list.d/google-chrome*.list; sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsqlite3-dev libfontconfig1-dev pkg-config
       - name: Run benchmarks
         run: cargo bench --workspace 2>&1 | tee bench-output.txt
       - name: Enforce SLA thresholds
