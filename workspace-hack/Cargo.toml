@@ -112,8 +112,7 @@ uuid = { version = "1", features = ["serde", "v4", "v7"] }
 wasm-encoder = { version = "0.254", features = ["wasmparser"] }
 wasmparser = { version = "0.254", default-features = false, features = ["component-model", "features", "hash-collections", "serde", "simd", "std", "validate"] }
 wasmtime-internal-core = { version = "48", default-features = false, features = ["anyhow", "backtrace", "serde"] }
-winnow-ca01ad9e24f5d932 = { package = "winnow", version = "0.7" }
-winnow-dff4ba8e3ae991db = { package = "winnow", version = "1" }
+winnow = { version = "1" }
 writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 yoke = { version = "0.8", default-features = false, features = ["alloc", "derive"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
@@ -215,7 +214,7 @@ unicode-xid = { version = "0.2" }
 wasm-encoder = { version = "0.254", features = ["wasmparser"] }
 wasmparser = { version = "0.254", default-features = false, features = ["component-model", "features", "hash-collections", "serde", "simd", "std", "validate"] }
 wasmtime-internal-core = { version = "48", default-features = false, features = ["anyhow", "backtrace", "serde"] }
-winnow-dff4ba8e3ae991db = { package = "winnow", version = "1" }
+winnow = { version = "1" }
 writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 yoke = { version = "0.8", default-features = false, features = ["alloc", "derive"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }

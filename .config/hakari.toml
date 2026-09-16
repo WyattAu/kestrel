@@ -25,3 +25,11 @@ platforms = [
 
 # Write out exact versions rather than a semver range. (Defaults to false.)
 # exact-versions = true
+
+# Standalone CI tooling kept out of the workspace-hack feature union:
+# kestrel-budget-check only parses criterion output (percentile-kit's
+# report half), and unioning its deps would add a second winnow version
+# to the hack (hashed dep names break the cargo-machete gate) for no
+# build-time benefit.
+[traversal-excludes]
+workspace-members = ["kestrel-budget-check"]

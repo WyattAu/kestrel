@@ -15,7 +15,11 @@ workspace = true
 [dependencies]
 percentile-kit = { workspace = true }
 thiserror = { workspace = true }
-workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+# No workspace-hack dependency: this is a standalone CI gate, and a
+# release-profile build of the workspace-hack feature union would pull
+# the GUI font stack (yeslogic-fontconfig-sys) into the benches job,
+# which installs no fontconfig dev libs. The crate is also listed in
+# hakari's traversal-excludes so the union stays unchanged.
 
 [dev-dependencies]
 tempfile = { workspace = true }
