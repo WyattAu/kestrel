@@ -12,6 +12,9 @@ members = [
     "crates/kestrel-tui",
     "crates/kestrel-gui",
     "crates/kestrel-mobile",
+    # CI tooling: percentile budget gate (estate standard §5), see
+    # percentile-budgets.toml.
+    "crates/kestrel-budget-check",
     "workspace-hack",
 ]
 
@@ -116,6 +119,11 @@ hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["simple"] }
 # Extracted kestrel OAuth2/OIDC primitives (PKCE/loopback/token/providers).
 oauth-toolkit = "0.2"
+
+# Percentile budgets (estate standard §5): report-only — parses
+# criterion output for the kestrel-budget-check CI gate; no tracker
+# runtime.
+percentile-kit = { version = "0.1", default-features = false, features = ["report"] }
 
 # Testing
 proptest = "1"

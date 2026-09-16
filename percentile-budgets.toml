@@ -1,0 +1,48 @@
+# Committed percentile budgets — estate standard §5 (P50/P99 within SLA).
+#
+# Enforced in CI by the benches job via `kestrel-budget-check`
+# (crates/kestrel-budget-check), a thin wrapper over percentile-kit's
+# report feature (https://github.com/WyattAu/percentile-kit). This is a
+# second, percentile-explicit gate alongside the criterion-baseline and
+# SLA gates in .github/workflows/ci.yml, which keep enforcing mean
+# regressions; here the criterion output is re-checked at the
+# percentile level (P99 = nearest-rank over criterion's sampled data).
+#
+# Schema (percentile-kit, deny_unknown_fields): `metric` names the bench
+# directory under target/criterion; `p50`/`p99` budgets and
+# `max_regression_pct` (allowed excess, %) are per-metric. Units are
+# criterion's base unit (nanoseconds per iteration). Values mirror the
+# SLA fail thresholds already enforced in ci.yml so both gates reference
+# the same numbers from the SLA doc; the 10% allowance matches the
+# baseline gate's regression tolerance.
+
+# Ingest throughput SLA: >= 800 msgs/sec at 100 envelopes/batch, i.e.
+# <= 125 ms per batch (100 / 800 s). P50 only: the SLA is a mean-based
+# throughput floor, and storage fsync tails make a P99 budget here
+# false-red prone — tail coverage for ingest stays with the baseline
+# gate.
+[[budget]]
+metric = "ingest/envelopes_100/batch"
+p50 = 125_000_000.0
+max_regression_pct = 10.0
+
+# Search SLA over 100k messages: fail > 50 ms (warn > 15 ms).
+[[budget]]
+metric = "search_100k/text_query_first_50"
+p50 = 50_000_000.0
+p99 = 50_000_000.0
+max_regression_pct = 10.0
+
+# TUI cold-start SLA: fail > 150 ms (warn > 50 ms).
+[[budget]]
+metric = "tui_cold_start/config_paths_app_state"
+p50 = 150_000_000.0
+p99 = 150_000_000.0
+max_regression_pct = 10.0
+
+# GUI cold-start SLA: fail > 500 ms (warn > 200 ms).
+[[budget]]
+metric = "gui_cold_start/config_paths_viewport_state"
+p50 = 500_000_000.0
+p99 = 500_000_000.0
+max_regression_pct = 10.0

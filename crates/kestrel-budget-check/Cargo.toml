@@ -1,0 +1,22 @@
+[package]
+name = "kestrel-budget-check"
+description = "CI budget gate: committed P50/P99 percentile budgets vs criterion output (estate standard §5), via percentile-kit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# CI tooling, not a published product crate.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+percentile-kit = { workspace = true }
+thiserror = { workspace = true }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+toml = { workspace = true }

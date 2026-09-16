@@ -402,6 +402,15 @@ jobs:
 
           if [ "$FAIL" -eq 1 ]; then echo "::error::Baseline regression gate failed."; exit 1; fi
           echo "All benchmarks within 10% of their baselines."
+      - name: Enforce percentile budgets via percentile-kit (estate standard §5)
+        # Second, percentile-explicit gate alongside the criterion
+        # baselines above: percentile-budgets.toml commits P50/P99
+        # budgets (values = the SLA thresholds enforced above) and
+        # kestrel-budget-check — a thin wrapper over percentile-kit's
+        # report feature (github.com/WyattAu/percentile-kit) — parses
+        # the criterion output this job just produced. Parse-only: no
+        # re-benching, so this adds compile-and-read latency only.
+        run: cargo run -p kestrel-budget-check --release -- --criterion-dir target/criterion --budgets percentile-budgets.toml
       # Idle-memory SLA (requirements §8: TUI 25/40 MB, GUI 120/200 MB)
       # is enforced end-to-end against the real binaries in the
       # startup-harness job; a debug test-process RSS (static code pages of
