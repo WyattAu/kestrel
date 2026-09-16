@@ -20,9 +20,13 @@
 # <= 125 ms per batch (100 / 800 s). P50 only: the SLA is a mean-based
 # throughput floor, and storage fsync tails make a P99 budget here
 # false-red prone — tail coverage for ingest stays with the baseline
-# gate.
+# gate. Note the underscore: criterion 0.7 sanitizes `/` inside a bench
+# id to `_` (make_filename_safe), so bench id `envelopes_100/batch` in
+# group `ingest` lands in `target/criterion/ingest/envelopes_100_batch`;
+# the slashes in the metrics above are group/id separators (real
+# nesting) and are unaffected.
 [[budget]]
-metric = "ingest/envelopes_100/batch"
+metric = "ingest/envelopes_100_batch"
 p50 = 125_000_000.0
 max_regression_pct = 10.0
 
