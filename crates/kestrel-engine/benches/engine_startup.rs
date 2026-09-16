@@ -70,7 +70,11 @@ fn bench_cold_start(c: &mut Criterion) {
 
 fn bench_memory_idle(c: &mut Criterion) {
     let mut group = c.benchmark_group("engine_memory_idle");
-    group.sample_size(5);
+    // Criterion's minimum sample size is 10 (asserted in
+    // BenchmarkGroup::sample_size); 5 panicked the whole workspace bench
+    // run after engine_cold_start, so nothing downstream (storage, TUI,
+    // GUI) ever got measured.
+    group.sample_size(10);
 
     group.bench_function("idle_rss_bytes", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
