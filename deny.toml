@@ -5,6 +5,18 @@
 version = 2
 yanked = "deny"
 ignore = [
+    # October 2026 wave — the desktop ecosystem's unmaintained/font/dbus
+    # crates, each unfixable from this repo (see the inline audit holds in
+    # .github/workflows/ci.yml for the same list with per-ID reasons):
+    "RUSTSEC-2025-0141", # bincode 1.x/2.0 pre-1 line — unmaintained, incompatible 2.x rewrite
+    "RUSTSEC-2025-0057", # fxhash — unmaintained
+    "RUSTSEC-2024-0429", # glib — gtk-rs GTK3 chain
+    "RUSTSEC-2024-0436", # paste — unmaintained
+    "RUSTSEC-2026-0206", # rustybuzz — font shaping stack
+    "RUSTSEC-2026-0192", # ttf-parser — font parsing stack
+    "RUSTSEC-2026-0371", # zbus_names — zbus internals
+    "RUSTSEC-2026-0372", # zvariant_derive — zbus internals
+    "RUSTSEC-2026-0370", # zvariant — zbus internals
     # gtk-rs GTK3 bindings unmaintained; required by wry's webkit2gtk backend
     # on Linux (the mandated HTML viewport, ADR 0001). Tracked upstream:
     # wry migrates to GTK4 bindings when webkit2gtk-6.0 is broadly packaged.
